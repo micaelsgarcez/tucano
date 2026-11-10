@@ -31,7 +31,7 @@ beforeEach(async () => {
 })
 afterEach(async () => { await gateway.stop(); db.close(); rmSync(dir, { recursive: true, force: true }); setLang('pt') })
 function runner(engine: Engine): Runner {
-  return new Runner({ db, gateway, workDir: dir, settings: async () => settings, emit: () => {}, engines: { codex: engine, claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') } })
+  return new Runner({ db, gateway, workDir: dir, dataDir: dir, settings: async () => settings, emit: () => {}, engines: { codex: engine, claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') } })
 }
 function start(run: Runner, requestId = randomUUID()): OrbitExecution {
   return run.startTask({ source, detail, role: 'executor', requestId, agent, conversation: db.conversation('dm')!, requester: db.owner() })
@@ -159,7 +159,7 @@ it('keeps a queued continuation reserved while settings are loading', async () =
   let release = (): void => {}
   const hold = new Promise<void>(resolve => { release = resolve })
   let reads = 0
-  const r = new Runner({ db, gateway, workDir: dir, settings: async () => { if (++reads > 1) await hold; return settings }, emit: () => {}, engines: { codex: fakeEngine('codex'), claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') } })
+  const r = new Runner({ db, gateway, workDir: dir, dataDir: dir, settings: async () => { if (++reads > 1) await hold; return settings }, emit: () => {}, engines: { codex: fakeEngine('codex'), claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') } })
   await r.continue('paused')
   expect(() => start(r)).toThrow('already has active work')
   release()
@@ -180,5 +180,48 @@ it('retains observed approval outcome steps without rewriting the earlier waitin
   const earlier = activity().items.find(item => item.kind === 'attempt' && item.attemptId === 'approval-attempt')
   expect(earlier).toMatchObject({ status: 'waiting_approval', steps: [{ status: 'error' }] })
   expect(earlier?.evidence.stepIds).toHaveLength(1)
+  expect(activity().items.filter(item => item.kind === 'attempt')).toHaveLength(2)
+})
+
+it('keeps the answer reservation from attachment completion through responder enqueue', async () => {
+  const root: Message = { id: 'root', conversationId: 'dm', author: { kind: 'person', id: db.ownerId() }, at: 1, text: 'Request' }
+  db.createTaskExecution({ id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }, root)
+  db.saveMessage({ id: 'asked', conversationId: 'dm', threadId: root.id, author: { kind: 'agent', id: agent.id }, at: 2, text: 'Which file?', run: { attemptId: 'asked-attempt', status: 'waiting_input', steps: [] } })
+  let release = (): void => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const r = runner(fakeEngine('codex'))
+  let reads = 0
+  Object.defineProperty(r, 'keepFile', { value: () => { reads++; return hold } })
+  const sending = r.send('dm', 'This file', [], root.id, undefined, { files: [{ name: 'a.txt', data: 'eA==' }] })
+  expect(reads).toBe(1)
+  expect(db.message('asked')?.run?.status).toBe('done')
+  let duplicateAccepted = false
+  void hold.then(() => queueMicrotask(() => { try { start(r); duplicateAccepted = true } catch {} }))
+  release()
+  await sending
+  await r.idle()
+  expect(duplicateAccepted).toBe(false)
+  expect(activity().items.filter(item => item.kind === 'attempt')).toHaveLength(2)
+})
+
+it('keeps an approved action reserved if the original agent finishes before its tool', async () => {
+  const root: Message = { id: 'root', conversationId: 'dm', author: { kind: 'person', id: db.ownerId() }, at: 1, text: 'Request' }
+  db.saveAgent({ ...agent, computer: true })
+  db.createTaskExecution({ id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }, root)
+  const message: Message = { id: 'approval-message', conversationId: 'dm', threadId: root.id, author: { kind: 'agent', id: agent.id }, at: 2, text: '', run: { attemptId: 'approval-attempt', status: 'working', steps: [], approvalId: 'approval' } }
+  db.saveMessage(message)
+  db.createApproval({ id: 'approval', hash: 'hash', agentId: agent.id, conversationId: 'dm', messageId: message.id, connectorId: 'computador', connectorName: 'Computer', tool: 'bash', args: { command: 'test command' }, why: 'Test decision', highRisk: true, state: 'pending', createdAt: 1, expiresAt: Date.now() + 60000 })
+  let release = (): void => {}
+  let began = (): void => {}
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const running = new Promise<void>(resolve => { began = resolve })
+  const r = new Runner({ db, gateway, workDir: dir, settings: async () => settings, emit: () => {}, engines: { codex: fakeEngine('codex'), claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') }, computers: { call: async () => { began(); await hold; return { result: { content: [{ type: 'text', text: 'Test output' }] } } } } })
+  const deciding = r.decide('approval', 'approved')
+  await running
+  db.saveMessage({ ...message, run: { ...message.run!, status: 'done' } })
+  expect(() => start(r)).toThrow('already has active work')
+  release()
+  await deciding
+  await r.idle()
   expect(activity().items.filter(item => item.kind === 'attempt')).toHaveLength(2)
 })

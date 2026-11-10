@@ -514,7 +514,6 @@ export class Runner {
     // Answered for the person it was asked (by an admin, whoever covers for them, the requester past
     // the deadline): the agent is told so in so many words.
     let onBehalf: { agent: string; task: string } | undefined
-    const readFiles = reading.length ? this.taskJob(() => Promise.all(reading), { conversationId: conv.id, threadId: replyIn }) : undefined
     if (asked) {
       if (q?.state === 'open') {
         db.saveQuestion({ ...q, state: 'answered', answeredBy: writer.id, answeredAt: Date.now() })
@@ -537,33 +536,35 @@ export class Runner {
         }
     }
 
-    if (readFiles) await readFiles()
+    return this.taskJob(async () => {
+      if (reading.length) await Promise.all(reading)
 
-    if (members.length === 0) {
-      this.post(conv.id, replyIn, L('Ninguém está neste canal ainda. Adicione agentes na página de cada um (Canais) e mande de novo.', "No one is in this channel yet. Add agents on each one's page (Channels) and send it again."))
-      return
-    }
-    if (this.paused) {
-      this.post(conv.id, replyIn, L('Os agentes estão pausados: ninguém responde até você retomar (botão no topo da barra lateral).', 'The agents are paused: no one answers until you resume (button at the top of the sidebar).'))
-      return
-    }
-    // Written to a person (@Ana) and to no agent: it's for them, not the agents. No router, no
-    // reply; a line says who heard about it. So with one who left, or yourself: no one to tell.
-    const toPeople = calledPeople.length > 0 || (db.people().length > 1 && toPeopleOnly(typed, db.people({ removed: true }), db.agents()))
-    if (responders.length === 0 && toPeople && conv.kind !== 'dm') {
-      const names = calledPeople.map((p) => `**${p.name}**`).join(L(' e ', ' and '))
-      // Someone who left, yourself, or a name two people share: whoever wrote it learns no one heard.
-      this.post(conv.id, replyIn, names ? L(`Avisei ${names}.`, `Let ${names} know.`) : L('Ninguém foi avisado: não tem ninguém com esse nome aqui pra chamar (escreva o nome inteiro se duas pessoas têm o mesmo).', 'No one was told: there is no one by that name here to call (write the whole name if two people share it).'))
-      return
-    }
-    if (responders.length === 0) {
-      if (conv.kind === 'dm' || members.length === 1) responders = members
-      else if (members.length > 1) {
-        void this.routeAndRun(conv, members, replyIn, mine.id)
+      if (members.length === 0) {
+        this.post(conv.id, replyIn, L('Ninguém está neste canal ainda. Adicione agentes na página de cada um (Canais) e mande de novo.', "No one is in this channel yet. Add agents on each one's page (Channels) and send it again."))
         return
       }
-    }
-    for (const agent of responders) this.queueReply(agent, conv, { depth: 1, threadId: replyIn, replyTo: mine.id, ...(onBehalf?.agent === agent.id ? { task: onBehalf.task } : {}) }, true)
+      if (this.paused) {
+        this.post(conv.id, replyIn, L('Os agentes estão pausados: ninguém responde até você retomar (botão no topo da barra lateral).', 'The agents are paused: no one answers until you resume (button at the top of the sidebar).'))
+        return
+      }
+      // Written to a person (@Ana) and to no agent: it's for them, not the agents. No router, no
+      // reply; a line says who heard about it. So with one who left, or yourself: no one to tell.
+      const toPeople = calledPeople.length > 0 || (db.people().length > 1 && toPeopleOnly(typed, db.people({ removed: true }), db.agents()))
+      if (responders.length === 0 && toPeople && conv.kind !== 'dm') {
+        const names = calledPeople.map((p) => `**${p.name}**`).join(L(' e ', ' and '))
+        // Someone who left, yourself, or a name two people share: whoever wrote it learns no one heard.
+        this.post(conv.id, replyIn, names ? L(`Avisei ${names}.`, `Let ${names} know.`) : L('Ninguém foi avisado: não tem ninguém com esse nome aqui pra chamar (escreva o nome inteiro se duas pessoas têm o mesmo).', 'No one was told: there is no one by that name here to call (write the whole name if two people share it).'))
+        return
+      }
+      if (responders.length === 0) {
+        if (conv.kind === 'dm' || members.length === 1) responders = members
+        else if (members.length > 1) {
+          void this.routeAndRun(conv, members, replyIn, mine.id)
+          return
+        }
+      }
+      for (const agent of responders) this.queueReply(agent, conv, { depth: 1, threadId: replyIn, replyTo: mine.id, ...(onBehalf?.agent === agent.id ? { task: onBehalf.task } : {}) }, true)
+    }, { conversationId: conv.id, threadId: replyIn })()
   }
 
   // An image I attached, kept in the artifact store with my message (no agent made it).
@@ -2331,6 +2332,12 @@ ${note}`,
   // `always` ("Sempre permitir"): from now on this agent uses that tool without asking; never a high-risk one.
   // `by`: the person deciding (the owner when left out: the phone); the agent hears it in their name.
   async decide(id: string, decision: 'approved' | 'refused' | 'expired', reason?: string, always?: boolean, by?: string): Promise<void> {
+    const approval = this.deps.db.approval(id)
+    const message = approval && this.deps.db.message(approval.messageId)
+    await this.taskJob(() => this.decideApproval(id, decision, reason, always, by), message ? { conversationId: message.conversationId, threadId: message.threadId } : undefined)()
+  }
+
+  private async decideApproval(id: string, decision: 'approved' | 'refused' | 'expired', reason?: string, always?: boolean, by?: string): Promise<void> {
     const { db, emit } = this.deps
     const ap = db.approval(id)
     const decider = decision === 'expired' ? undefined : (by ?? db.ownerId())
