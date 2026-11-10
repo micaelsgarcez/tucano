@@ -1,3 +1,4 @@
+import { openFactory, type FactoryBridge } from './factory'
 import { Tasks, taskError } from './tasks'
 import { TaskStore } from '../tasks/store'
 // The core runs in an Electron utility process: database, engines and runs
@@ -912,7 +913,9 @@ setInterval(() => {
   if (reviewer.due()) void reviewer.review().then(() => emit({ type: 'wiki' }))
 }, 3600_000).unref()
 
+let factory: FactoryBridge | undefined
 const runner = new Runner({
+  factory: () => factory,
   db,
   engines: engineImpls,
   settings: () => enginesReady.then(settings),
@@ -1339,6 +1342,7 @@ const emitPeople = (): void => emit({ type: 'people', people: db.people(), forme
 
 const taskStore = new TaskStore(join(dataDir, 'tasks.sqlite'))
 const tasks = new Tasks(db, taskStore)
+factory = openFactory({ dataDir, db, tasks, runner, emitConversation: id => emitConversations([id]) })
 
 const api: Handlers = {
   tasksBoardData: ({ sourceId }) => tasks.boardData(sourceId),
@@ -2434,6 +2438,7 @@ process.parentPort.on('message', (e) => {
 
 process.on('exit', () => {
   for (const e of Object.values(engineImpls)) e.dispose?.() // the Claude Code processes kept open between replies
+  factory?.close()
   db.close()
 })
 // The app stops the core with SIGTERM, which by default skips the 'exit' handlers
