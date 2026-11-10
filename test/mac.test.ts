@@ -125,8 +125,9 @@ describe('an agent whose computer is this Mac', () => {
   it('keeps a service running on a Mac port, and stops it with its children', async () => {
     const me = db.agent('prod-0001')!
     const port = await freePort()
-    // python3 on Windows is often the Store's placeholder; node is always there when the tests run.
-    const server = win ? `exec node -e "require('http').createServer((q, r) => r.end('ok')).listen(${port}, '127.0.0.1')"` : `exec python3 -m http.server ${port} --bind 127.0.0.1`
+    // Use the test runner's Node even when the isolated shell PATH excludes it.
+    const node = slashes(process.execPath).replaceAll("'", "'\\''")
+    const server = `exec '${node}' -e "require('http').createServer((q, r) => r.end('ok')).listen(${port}, '127.0.0.1')"`
     const r = await mac.call(me, 'start_service', { name: 'previa', command: server, port }, ctx)
     expect(r.result.isError).toBeFalsy()
     expect(r.service).toBe('previa')
