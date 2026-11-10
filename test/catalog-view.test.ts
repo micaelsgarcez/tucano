@@ -12,7 +12,11 @@ describe('catalogView', () => {
   it('says what each asks, which own app it needs and what runs on the machine', () => {
     const github = view.find((v) => v.id === 'github')!
     expect(github.auth).toBe('token')
-    expect(github.fields).toEqual([expect.objectContaining({ id: 'token', secret: true, label: expect.any(String), placeholder: 'github_pat_…' })])
+    expect(github.fields).toEqual([
+      expect.objectContaining({ id: 'name', label: expect.any(String) }),
+      expect.objectContaining({ id: 'token', secret: true, label: expect.any(String), placeholder: 'github_pat_…' })
+    ])
+    expect(github.fields?.[0]?.secret).toBeUndefined()
     expect(view.find((v) => v.id === 'gmail')).toMatchObject({ app: 'google', auth: 'oauth' })
     expect(view.find((v) => v.id === 'azure-devops')?.runs).toBe('npx -y @azure-devops/mcp')
     expect(view.find((v) => v.id === 'linear')).toEqual({ id: 'linear', name: 'Linear', category: 'dev', about: expect.any(String), auth: 'oauth' })

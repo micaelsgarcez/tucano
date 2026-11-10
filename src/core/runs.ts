@@ -250,18 +250,17 @@ function exposedName(connector: Connector, tool: string, taken: Set<string>): st
   return name
 }
 
-// A GitHub connector this agent has access to (the first, if there are several): its grant, the
-// tools it publishes with (a branch, files, a PR) by the names this turn exposes, and what a rule
-// makes ask first or turns off. A tool turned off by a rule isn't exposed, so it shows only as "off".
 const IS_GITHUB = /github/i
 const MAKES = /^create_?(a_)?branch$|^create_or_update_file$/i // GitHub's MCP; push and PR tools go by their kind
 const publishes = (name: string): boolean => MAKES.test(name) || toolActions(name).some((k) => k === 'push' || k === 'pr' || k === 'commit')
-export function githubAccess(connectors: Connector[], agent: Pick<Agent, 'grants'>, exposed: Map<string, Exposed>, policy: Policy): GitHubAccess | undefined {
-  const c = connectors.find((x) => (IS_GITHUB.test(x.url ?? '') || IS_GITHUB.test(x.name)) && (agent.grants[x.id] === 'read' || agent.grants[x.id] === 'read_write'))
-  if (!c) return undefined
-  const tools = [...exposed].filter(([, e]) => e.connector.id === c.id && e.tool.cls !== 'read' && publishes(e.tool.name) && !toolActions(e.tool.name).some((k) => k === 'merge' || k === 'delete')).map(([name]) => name)
-  const kinds: ActionKind[] = ['push', 'pr']
-  return { connector: c.name, level: agent.grants[c.id] as 'read' | 'read_write', tools, ask: kinds.filter((k) => actionMode(k, policy) === 'ask'), off: kinds.filter((k) => actionMode(k, policy) === 'off') }
+export function githubAccess(connectors: Connector[], agent: Pick<Agent, 'grants'>, exposed: Map<string, Exposed>, policy: Policy): GitHubAccess[] {
+  return connectors.flatMap((c) => {
+    const level = agent.grants[c.id]
+    if (!(IS_GITHUB.test(c.url ?? '') || IS_GITHUB.test(c.name)) || (level !== 'read' && level !== 'read_write')) return []
+    const tools = [...exposed].filter(([, e]) => e.connector.id === c.id && e.tool.cls !== 'read' && publishes(e.tool.name) && !toolActions(e.tool.name).some((k) => k === 'merge' || k === 'delete')).map(([name]) => name)
+    const kinds: ActionKind[] = ['push', 'pr']
+    return [{ connector: c.name, level, tools, ask: kinds.filter((k) => actionMode(k, policy) === 'ask'), off: kinds.filter((k) => actionMode(k, policy) === 'off') }]
+  })
 }
 
 // "2,4 mi", "850 mil"
