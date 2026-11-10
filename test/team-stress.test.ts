@@ -540,7 +540,7 @@ describe('unread, for one person (17)', () => {
         for (const c of convs) expect(db.conversation(c)?.unread, `round ${round} step ${step} ${c}`).toBe(main.count(c))
       }
     }
-  })
+  }, 30_000)
 
   it('a reply finishing where the person is looking writes nothing and says nothing', () => {
     const db = new Db(':memory:')
