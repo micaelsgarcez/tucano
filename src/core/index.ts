@@ -1,4 +1,5 @@
-import { Orbit } from './orbit'
+import { Tasks, taskError } from './tasks'
+import { TaskStore } from '../tasks/store'
 // The core runs in an Electron utility process: database, engines and runs
 // live here so the window never waits on agent work. The renderer talks to it
 // over a MessagePort handed out by the main process.
@@ -1336,25 +1337,28 @@ const titleUnavailable = (title: string): string => L(`Não dá pra usar o títu
 const nameOf = (ctx: Ctx): string => (ctx.person.role === 'owner' ? settings().workspaceName : ctx.person.name) || L('Você', 'You')
 const emitPeople = (): void => emit({ type: 'people', people: db.people(), former: db.formerPeople() })
 
-const orbit = new Orbit(db, secrets)
+const taskStore = new TaskStore(join(dataDir, 'tasks.sqlite'))
+const tasks = new Tasks(db, taskStore)
 
 const api: Handlers = {
-  orbitBoardData: ({ sourceId }) => orbit.boardData(sourceId),
-  orbitComments: ({ sourceId, taskId, cursor }) => orbit.comments(sourceId, taskId, cursor),
-  orbitActivity: ({ sourceId, taskId, cursor }, ctx) => orbit.activity(sourceId, taskId, ctx.person, cursor),
-  orbitStart: (p, ctx) => orbit.start(p, (source, detail, agent) => {
+  tasksBoardData: ({ sourceId }) => tasks.boardData(sourceId),
+  tasksComments: ({ sourceId, taskId, cursor }) => tasks.comments(sourceId, taskId, cursor),
+  tasksActivity: ({ sourceId, taskId, cursor }, ctx) => tasks.activity(sourceId, taskId, ctx.person, cursor),
+  tasksStart: (p, ctx) => tasks.start(p, (source, detail, agent) => {
     const conversationId = api.openDm({ agentId: agent.id }, ctx)
     const conversation = db.conversation(conversationId)
     if (!conversation) throw new Error(L('Conversa indisponível.', 'Conversation unavailable.'))
     return runner.startTask({ source, detail, agent, conversation, requester: ctx.person, role: p.role, requestId: p.requestId })
   }),
-  orbitSource: () => orbit.source(),
-  orbitSaveSource: (p) => orbit.save(p),
-  orbitProjects: ({ sourceId }) => orbit.projects(sourceId),
-  orbitProjectData: ({ sourceId, projectId }) => orbit.projectData(sourceId, projectId),
-  orbitTasks: ({ sourceId, projectId, cursor }) => orbit.tasks(sourceId, projectId, cursor),
-  orbitTask: ({ sourceId, taskId }) => orbit.detail(sourceId, taskId),
-  orbitAssignAgent: (p) => orbit.assign(p),
+  tasksCreate: (p) => tasks.create(p),
+  tasksUpdate: (p) => tasks.update(p),
+  tasksAddComment: (p) => tasks.addComment(p),
+  tasksSource: () => tasks.source(),
+  tasksProjects: ({ sourceId }) => tasks.projects(sourceId),
+  tasksProjectData: ({ sourceId, projectId }) => tasks.projectData(sourceId, projectId),
+  tasksTasks: ({ sourceId, projectId, cursor }) => tasks.tasks(sourceId, projectId, cursor),
+  tasksTask: ({ sourceId, taskId }) => tasks.detail(sourceId, taskId),
+  tasksAssignAgent: (p) => tasks.assign(p),
   knowledgeSource: () => knowledge.source(),
   saveKnowledgeSource: (p) => knowledge.save(p),
   removeKnowledgeSource: (p) => knowledge.remove(p.sourceId),
@@ -2413,7 +2417,7 @@ function handle(port: MessagePortMain, req: Request): void {
         console.error(`[core] ${req.method}`, e)
         // The page shows it as it comes: in people's words, the raw text stays in the log above
         // (and for anyone but the owner, no path on this machine).
-        reply({ error: errorFor(e, person.role === 'owner') })
+        reply({ error: errorFor(taskError(e), person.role === 'owner') })
       }
     )
 }

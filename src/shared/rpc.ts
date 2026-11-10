@@ -1,4 +1,4 @@
-import type { OrbitSource, OrbitProject, OrbitProjectData, OrbitTaskPage, OrbitTaskDetail, OrbitBoardData, OrbitCommentPage, OrbitActivityPage, OrbitExecution } from './orbit'
+import type { TaskCreate, TaskPatch, TaskComment, TaskSource, TaskProject, TaskProjectData, TaskPage, TaskDetail, TaskBoardData, TaskCommentPage, TaskActivityPage, TaskExecution } from './tasks'
 // The contract between the renderer and the core, carried over a MessagePort.
 import type { KnowledgeSource, KnowledgeProject, KnowledgeEntry, KnowledgePage } from './knowledge'
 import type { Answer } from './questions'
@@ -34,17 +34,19 @@ export interface Snapshot {
 }
 
 export interface Api {
-  orbitBoardData(p: { sourceId: string }): Promise<OrbitBoardData>
-  orbitComments(p: { sourceId: string; taskId: string; cursor?: string }): Promise<OrbitCommentPage>
-  orbitActivity(p: { sourceId: string; taskId: string; cursor?: string }): Promise<OrbitActivityPage>
-  orbitStart(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; requestId: string }): Promise<OrbitExecution>
-  orbitSource(): OrbitSource | null
-  orbitSaveSource(p: { baseUrl: string; workspaceId: string; token: string }): Promise<OrbitSource>
-  orbitProjects(p: { sourceId: string }): Promise<OrbitProject[]>
-  orbitProjectData(p: { sourceId: string; projectId: string }): Promise<OrbitProjectData>
-  orbitTasks(p: { sourceId: string; projectId: string | null; cursor?: string }): Promise<OrbitTaskPage>
-  orbitTask(p: { sourceId: string; taskId: string }): Promise<OrbitTaskDetail>
-  orbitAssignAgent(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; agentId: string | null }): Promise<OrbitTaskDetail>
+  tasksBoardData(p: { sourceId: string }): Promise<TaskBoardData>
+  tasksComments(p: { sourceId: string; taskId: string; cursor?: string }): Promise<TaskCommentPage>
+  tasksActivity(p: { sourceId: string; taskId: string; cursor?: string }): Promise<TaskActivityPage>
+  tasksStart(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; requestId: string }): Promise<TaskExecution>
+  tasksCreate(p: { sourceId: string; projectId: string; title: string; description?: string; statusId?: string; priority?: TaskCreate['priority']; dueAt?: string | null; assigneeIds?: string[]; labelIds?: string[]; parentTaskId?: string | null }): Promise<TaskDetail>
+  tasksUpdate(p: { sourceId: string; taskId: string; expectedVersion: number; patch: TaskPatch }): Promise<TaskDetail>
+  tasksAddComment(p: { sourceId: string; taskId: string; body: string; parentId?: string }): Promise<TaskComment>
+  tasksSource(): TaskSource | null
+  tasksProjects(p: { sourceId: string }): Promise<TaskProject[]>
+  tasksProjectData(p: { sourceId: string; projectId: string }): Promise<TaskProjectData>
+  tasksTasks(p: { sourceId: string; projectId: string | null; cursor?: string }): Promise<TaskPage>
+  tasksTask(p: { sourceId: string; taskId: string }): Promise<TaskDetail>
+  tasksAssignAgent(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; agentId: string | null }): Promise<TaskDetail>
   knowledgeSource(): KnowledgeSource | null
   saveKnowledgeSource(p: { name: string; baseUrl: string; token: string }): Promise<KnowledgeSource>
   removeKnowledgeSource(p: { sourceId: string }): Promise<void>

@@ -1,4 +1,6 @@
-# Orbit board and agent activity
+# Previous Orbit board and agent activity
+
+This page records the board before the task-module migration. Its screenshots use the former Orbit fixture. Current behavior and verification entry points are in [Task module](tasks.md).
 
 Projects and tasks shows the Orbit projects allowed by your read token. Filter a project, open a card and assign a Tucano executor or reviewer. Starting work is a separate action and uses that agent's existing permissions.
 

@@ -22,6 +22,7 @@ import { codeMinutes, PairCodes } from './pair-codes'
 import { htmlPage, pairLinkPage, pairPost, type PairDoor } from './pair-http'
 import { Preview } from './preview'
 import { vault } from './vault'
+import { taskModule } from './task-module'
 import { verifyLocal } from '../core/local-paths'
 import { pairingLink } from '../shared/servers'
 import { ACCESS_SHIM, INSECURE_CONTEXT_SHIM } from './web-shim'
@@ -70,6 +71,7 @@ if (process.argv[2] === 'pair') {
 const key = Buffer.from(kept('server.key', () => randomBytes(32).toString('base64')), 'base64')
 
 const { seal, open } = vault(key)
+const tasksHttp = taskModule(dataDir, publicUrl, open)
 // The core signs the files it has checked a message may show (local-paths.ts); /local/ serves only those.
 // A new key each start: an old address stops working with the process that made it.
 const localKey = randomBytes(32).toString('base64url')
@@ -274,6 +276,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
   const previewPort = preview?.portOf(req.headers.host)
   if (previewPort) return preview!.handle(req, res, previewPort)
   const url = new URL(req.url ?? '/', 'http://x')
+  if (tasksHttp(req, res)) return
   const ip = clientIp(req, trustProxy)
   // Back from a connector's authorization page. No token here: it may open in a browser that never
   // signed in (the desktop app sends it to the system's). What makes it count is the state, made

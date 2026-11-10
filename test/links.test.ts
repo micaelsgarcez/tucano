@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAppPage, isOutsideLink } from '../src/shared/links'
+import { isAppPage, isOutsideLink, taskIdFromHash } from '../src/shared/links'
 import { LOCAL_LINK } from '../src/shared/path-text'
 import { safeUrl } from '../src/renderer/src/links'
 
@@ -56,4 +56,12 @@ describe('links in markdown', () => {
     expect(safeUrl('a.png', 'src')).toBe('a.png')
     expect(safeUrl('javascript:alert(1)', 'src')).toBe('')
   })
+})
+
+it('reads task links without accepting malformed or unrelated fragments', () => {
+  expect(taskIdFromHash('#tasks/01-task')).toBe('01-task')
+  expect(taskIdFromHash('#tasks/%74ask')).toBe('task')
+  for (const hash of ['', '#wiki/page', '#tasks/', '#tasks/%', '#tasks/a/b', '#tasks/a%2Fb', '#tasks/%00', `#tasks/${'a'.repeat(201)}`]) {
+    expect(taskIdFromHash(hash)).toBeNull()
+  }
 })

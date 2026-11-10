@@ -1,17 +1,17 @@
 // A disposable real-server preview. All tasks, people, reports and credentials are synthetic.
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createServer } from 'node:http'
 import { createServer as createSocket } from 'node:net'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, createWriteStream } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { pathToFileURL } from 'node:url'
+import { stripTypeScriptTypes } from 'node:module'
 
-const dataDir = mkdtempSync(join(tmpdir(), 'tucano-orbit-preview-'))
+const dataDir = mkdtempSync(join(tmpdir(), 'tucano-tasks-preview-'))
 const workspace = randomUUID()
 const source = randomUUID()
-const revision = randomUUID()
 const human = randomUUID()
 const now = Date.now()
 const iso = offset => new Date(now + offset).toISOString()
@@ -34,24 +34,9 @@ const tasks = Array.from({ length: 30 }, (_, index) => {
   const status = statuses.find(status => status.project_id === project.id && status.position === (index === 0 ? 2 : index % 4))
   return { id: randomUUID(), project_id: project.id, status_id: status.id, identifier: `${project.key}-${index + 1}`, title: titles[index % titles.length], description: index === 0 ? 'Conferir o contrato público da API e registrar os resultados da revisão.\n\n**Critérios de aceite**\n\n- Validar o caminho de sucesso e a resposta de erro.\n- Executar os testes relevantes.\n- Solicitar a revisão antes de publicar.' : 'Tarefa de demonstração para conferir o quadro, as propriedades e a atividade dos agentes.', priority: ['high', 'medium', 'low', 'none'][index % 4], assignee_ids: index % 3 === 0 ? [human] : [], label_ids: index % 2 === 0 ? [labels[index % projects.length].id] : [], due_at: index % 3 === 0 ? iso((index === 0 ? 2 : -1) * 86400000) : null, created_at: iso(-index * 60000), updated_at: iso(-index * 30000) }
 })
-const send = (res, value) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)) }
-const list = (items, url) => { const offset = Number(url.searchParams.get('cursor') ?? 0); const limit = Math.min(100, Number(url.searchParams.get('limit') ?? 25)); return { items: items.slice(offset, offset + limit), next_cursor: offset + limit < items.length ? String(offset + limit) : null } }
-const mock = createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost')
-  if (req.headers.authorization !== 'Bearer preview-read-token') { res.writeHead(401).end(); return }
-  const path = url.pathname.split('/').filter(Boolean).slice(5)
-  if (path[0] === 'projects' && path.length === 1) return send(res, list(projects, url))
-  if (path[0] === 'projects' && path[2] === 'statuses') return send(res, list(statuses.filter(status => status.project_id === path[1]), url))
-  if (path[0] === 'projects' && path[2] === 'labels') return send(res, list(labels.filter(label => label.project_id === path[1]), url))
-  if (path[0] === 'members') return send(res, list([{ user_id: human, display_name: 'Alex Demo' }], url))
-  if (path[0] === 'tasks' && path.length === 1) return send(res, list(tasks.filter(task => !url.searchParams.get('project_id') || task.project_id === url.searchParams.get('project_id')), url))
-  const task = tasks.find(task => task.id === path[1])
-  if (task && path[2] === 'comments') return send(res, list([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', task_id: task.id, author_id: human, author_service_account: null, body: 'Escopo confirmado. Registrar evidências e solicitar revisão ao terminar.', parent_id: null, created_at: iso(-3600000), updated_at: iso(-3600000) }], url))
-  if (task) return send(res, task)
-  res.writeHead(404).end()
-})
-await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve))
-const mockUrl = `http://127.0.0.1:${mock.address().port}`
+const storeModule = join(dataDir, 'task-store.mjs')
+writeFileSync(storeModule, stripTypeScriptTypes(readFileSync(resolve('src/tasks/store.ts'), 'utf8'), { mode: 'transform' }))
+const { TaskStore } = await import(pathToFileURL(storeModule).href)
 const reservation = createSocket()
 await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve))
 const port = reservation.address().port
@@ -67,8 +52,6 @@ async function cleanup() {
   if (cleaning) return
   cleaning = true
   server.kill('SIGTERM')
-  mock.closeAllConnections()
-  await new Promise(resolve => mock.close(resolve))
   await new Promise(resolve => server.exitCode !== null || server.signalCode !== null ? resolve() : server.once('exit', resolve))
   log.end()
   rmSync(dataDir, { recursive: true, force: true })
@@ -97,8 +80,26 @@ try {
     setting.run('onboarding', JSON.stringify({ done: true }))
     db.prepare('UPDATE people SET name=? WHERE id=?').run('Alex Demo', owner)
     const meta = db.prepare('INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)')
-    meta.run('orbit:source', JSON.stringify({ id: source, workspaceId: workspace, baseUrl: mockUrl, revision }))
-    db.prepare('INSERT OR REPLACE INTO secrets(key,value) VALUES (?,?)').run(`orbit:${revision}`, 'plain:preview-read-token')
+    const store = new TaskStore(join(dataDir, 'tasks.sqlite'))
+    try {
+      store.importSnapshot({
+        source: { id: source, workspaceId: workspace },
+        owner: { id: owner, workspaceId: workspace, projectIds: projects.map(project => project.id), scopes: ['tasks:read', 'tasks:write'], serviceAccountId: null, owner: true },
+        fingerprint: 'synthetic-preview-v1',
+        tables: {
+          projects: projects.map(project => ({ id: project.id, name: project.name, project_key: project.key, color: project.color, workspace_id: workspace, task_counter: 30, deleted_at: null })),
+          task_statuses: statuses,
+          labels,
+          users: [{ id: human, display_name: 'Alex Demo', deleted_at: null, suspended_at: null }, { id: owner, display_name: 'Alex Demo', deleted_at: null, suspended_at: null }],
+          memberships: [human, owner].map(id => ({ id: randomUUID(), workspace_id: workspace, user_id: id })),
+          tasks: tasks.map((task, index) => ({ id: task.id, workspace_id: workspace, project_id: task.project_id, status_id: task.status_id, number: index + 1, title: task.title, description: task.description, priority: task.priority, due_at: task.due_at ? Date.parse(task.due_at) : null, created_at: Date.parse(task.created_at), updated_at: Date.parse(task.updated_at), version: 1, source_url: null, parent_task_id: null, deleted_at: null, creator_id: owner, creator_service_account_id: null })),
+          task_assignees: tasks.flatMap(task => task.assignee_ids.map(id => ({ id: randomUUID(), task_id: task.id, user_id: id }))),
+          task_labels: tasks.flatMap(task => task.label_ids.map(id => ({ id: randomUUID(), task_id: task.id, label_id: id })))
+        }
+      })
+      store.addComment(store.ownerPrincipal(), { taskId: tasks[0].id, body: 'Escopo confirmado. Registrar evidências e solicitar revisão ao terminar.' })
+      if (store.list(store.ownerPrincipal()).items.length !== tasks.length) throw new Error('Preview task seed is incomplete')
+    } finally { store.close() }
     tasks.forEach((task, index) => {
       for (const [role, agent] of [['executor', agents[index % 2]], ['reviewer', agents[(index + 1) % 2]]]) meta.run(`orbit:assignment:${JSON.stringify([source, workspace, task.id, role])}`, agent.id)
     })
@@ -121,7 +122,7 @@ try {
   const token = readFileSync(join(dataDir, 'server-token'), 'utf8').trim()
   writeFileSync(join(dataDir, 'preview.json'), JSON.stringify({ origin, link: `${origin}/?token=${encodeURIComponent(token)}`, dataDir, taskId: tasks[0].id }, null, 2), { mode: 0o600 })
   console.log(`Synthetic preview ready. Private access details: ${join(dataDir, 'preview.json')}`)
-  console.log('Press Ctrl+C to stop the servers and remove the temporary database.')
+  console.log('Press Ctrl+C to stop the server and remove the temporary database.')
 } catch (error) {
   console.error(error.message)
   await cleanup()

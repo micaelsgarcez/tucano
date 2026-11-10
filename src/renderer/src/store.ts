@@ -1,6 +1,7 @@
 // Renderer state. Everything except the current view comes from the core and
 // is kept in sync by its events; actions go to the core over RPC.
 import { useCallback, useRef, useSyncExternalStore } from 'react'
+import { taskIdFromHash } from '../../shared/links'
 import { L, setLang } from '../../shared/lang'
 import type { Answer } from '../../shared/questions'
 import type { CoreEvent, Method, Params } from '../../shared/rpc'
@@ -70,7 +71,7 @@ export type View =
   | { kind: 'usage' }
   | { kind: 'connectors' }
   | { kind: 'memory' }
-  | { kind: 'orbit' }
+  | { kind: 'tasks'; taskId?: string }
   | { kind: 'wiki'; title?: string; edit?: boolean; tab?: 'pages' | 'pending' | 'sources' | 'review'; source?: string } // the wiki's home (a tab), a page (being edited), or a source
   | { kind: 'routines' }
   | { kind: 'skills' }
@@ -610,7 +611,8 @@ export async function start(): Promise<void> {
   for (const b of snap.browsers) showFrame(b.agentId, b.frame)
   set((s) => {
     const first = snap.conversations.find((c) => c.kind === 'channel') ?? snap.conversations[0]
-    const view = s.view ?? (first ? { kind: 'conversation' as const, id: first.id } : { kind: 'new-agent' as const })
+    const taskId = taskIdFromHash(window.location?.hash ?? '')
+    const view = s.view ?? (taskId ? { kind: 'tasks' as const, taskId } : null) ?? (first ? { kind: 'conversation' as const, id: first.id } : { kind: 'new-agent' as const })
     return {
       ...withSettings({ ...s, you: snap.you, people: snap.people }, snap.settings),
       ready: true,

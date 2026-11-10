@@ -31,6 +31,7 @@ beforeAll(async () => {
     }
   }
   const win: Record<string, unknown> = {
+    location: { hash: '#tasks/off-page-task' },
     addEventListener: (_: string, l: (e: unknown) => void) => (listener = l),
     removeEventListener: () => {},
     tucano: { onNavigate: () => {}, viewing: () => {}, connect: () => queueMicrotask(() => listener!({ source: win, data: 'core:port', ports: [port] })) }
@@ -39,6 +40,12 @@ beforeAll(async () => {
   store = await import('../src/renderer/src/store')
   await store.start()
   emit = (event) => port.onmessage!({ data: { event } })
+})
+
+it('opens the linked task after the authenticated snapshot arrives', () => {
+  expect(store.getState().ready).toBe(true)
+  expect(store.getState().view).toEqual({ kind: 'tasks', taskId: 'off-page-task' })
+  store.navigate({ kind: 'conversation', id: 'c1' })
 })
 
 describe("the window's messages", () => {

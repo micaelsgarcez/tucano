@@ -5,7 +5,7 @@ export default defineConfig({
   main: {
     build: {
       rolldownOptions: {
-        input: { index: 'src/main/index.ts', core: 'src/core/index.ts', server: 'src/server/index.ts' }
+        input: { index: 'src/main/index.ts', core: 'src/core/index.ts', server: 'src/server/index.ts', tasks: 'src/server/tasks-cli.ts' }
       }
     }
   },

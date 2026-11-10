@@ -17,3 +17,14 @@ export function isAppPage(url: string, appPage: string): boolean {
     return false
   }
 }
+
+export function taskIdFromHash(hash: string): string | null {
+  const match = /^#tasks\/([^/]+)$/.exec(hash)
+  if (!match) return null
+  try {
+    const id = decodeURIComponent(match[1]!)
+    return id.length <= 200 && /^[a-zA-Z0-9_-]+$/.test(id) ? id : null
+  } catch {
+    return null
+  }
+}

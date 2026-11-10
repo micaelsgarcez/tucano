@@ -1,5 +1,5 @@
 import { L } from '../shared/lang'
-import type { OrbitActivity, OrbitExecution, OrbitActivityPage } from '../shared/orbit'
+import type { TaskActivity, TaskExecution, TaskActivityPage } from '../shared/tasks'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { cleanRules, isAutonomy } from '../shared/actions'
 import { randomUUID } from 'node:crypto'
@@ -1156,17 +1156,17 @@ export class Db {
     })
   }
 
-  taskExecution(conversationId: string, rootMessageId: string | undefined): OrbitExecution | undefined {
+  taskExecution(conversationId: string, rootMessageId: string | undefined): TaskExecution | undefined {
     if (!rootMessageId) return undefined
     const row = this.db.prepare('SELECT data, state FROM task_executions WHERE conversation_id = ? AND root_message_id = ?').get(conversationId, rootMessageId)
     return row ? { ...JSON.parse(str(row.data)), state: str(row.state) } : undefined
   }
 
-  createTaskExecution(execution: OrbitExecution, root: Message): { execution: OrbitExecution; created: boolean } {
+  createTaskExecution(execution: TaskExecution, root: Message): { execution: TaskExecution; created: boolean } {
     return this.tx(() => {
       const previous = this.db.prepare('SELECT data, state FROM task_executions WHERE source_id = ? AND requester_id = ? AND request_id = ?').get(execution.sourceId, execution.requesterId, execution.requestId)
       if (previous) {
-        const saved: OrbitExecution = { ...JSON.parse(str(previous.data)), state: str(previous.state) }
+        const saved: TaskExecution = { ...JSON.parse(str(previous.data)), state: str(previous.state) }
         if (saved.taskId !== execution.taskId || saved.role !== execution.role || saved.workspaceId !== execution.workspaceId) throw new Error(L('Este pedido já pertence a outra tarefa.', 'Request already belongs to another task'))
         return { execution: saved, created: false }
       }
@@ -1197,9 +1197,9 @@ export class Db {
     this.db.prepare("UPDATE task_executions SET state = 'started' WHERE id = ?").run(execution.id)
     const id = `attempt:${run.attemptId}`
     const old = this.db.prepare('SELECT data FROM task_activity WHERE id = ?').get(id)
-    const previous: OrbitActivity | undefined = old ? JSON.parse(str(old.data)) : undefined
+    const previous: TaskActivity | undefined = old ? JSON.parse(str(old.data)) : undefined
     // Answering a question closes its message, not the work the earlier attempt performed.
-    const item: OrbitActivity = {
+    const item: TaskActivity = {
       kind: 'attempt', id, executionId: execution.id, attemptId: run.attemptId,
       at: previous?.at ?? Date.now(), agentId: message.author.id,
       agentName: previous?.agentName ?? this.agent(message.author.id)?.name ?? execution.agentName,
@@ -1221,13 +1221,13 @@ export class Db {
     return this.tx(() => {
       const old = this.db.prepare('SELECT data FROM task_activity WHERE id = ?').get(id)
       if (old) {
-        const saved: OrbitActivity = JSON.parse(str(old.data))
+        const saved: TaskActivity = JSON.parse(str(old.data))
         if (saved.kind !== 'report' || saved.action !== input.action || saved.result !== input.result || saved.nextStep !== input.nextStep) throw new Error(L('Esta chave de relatório já foi usada.', 'Report key already used'))
         return id
       }
       const reports = this.db.prepare("SELECT data FROM task_activity WHERE execution_id = ? AND json_extract(data, '$.attemptId') = ? AND json_extract(data, '$.kind') = 'report'").all(execution.id, attemptId)
-      const used = new Set(reports.flatMap(row => { const item: OrbitActivity = JSON.parse(str(row.data)); return item.evidence.stepIds }))
-      const item: OrbitActivity = {
+      const used = new Set(reports.flatMap(row => { const item: TaskActivity = JSON.parse(str(row.data)); return item.evidence.stepIds }))
+      const item: TaskActivity = {
         kind: 'report', id, executionId: execution.id, attemptId, at: Date.now(), agentId,
         agentName: this.agent(agentId)?.name ?? execution.agentName, role: execution.role,
         action: input.action, result: input.result, nextStep: input.nextStep,
@@ -1239,13 +1239,13 @@ export class Db {
     })
   }
 
-  taskActivity(sourceId: string, workspaceId: string, taskId: string, requesterId: string, cursor?: string): OrbitActivityPage {
+  taskActivity(sourceId: string, workspaceId: string, taskId: string, requesterId: string, cursor?: string): TaskActivityPage {
     if (cursor !== undefined && (!/^[0-9]{1,16}$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) throw new Error(L('Cursor de atividade inválido.', 'Invalid activity cursor'))
     const rows = this.db.prepare(`SELECT a.sequence, a.data FROM task_activity a JOIN task_executions e ON e.id = a.execution_id
       WHERE e.source_id = ? AND e.workspace_id = ? AND e.task_id = ? AND e.requester_id = ? AND a.sequence < ? ORDER BY a.sequence DESC LIMIT 26`)
       .all(sourceId, workspaceId, taskId, requesterId, cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER)
-    const items: OrbitActivity[] = rows.slice(0, 25).map(row => JSON.parse(str(row.data)))
-    const executions: OrbitExecution[] = this.db.prepare(`SELECT data, state FROM task_executions WHERE source_id = ? AND workspace_id = ? AND task_id = ? AND requester_id = ? ORDER BY created_at DESC LIMIT 25`)
+    const items: TaskActivity[] = rows.slice(0, 25).map(row => JSON.parse(str(row.data)))
+    const executions: TaskExecution[] = this.db.prepare(`SELECT data, state FROM task_executions WHERE source_id = ? AND workspace_id = ? AND task_id = ? AND requester_id = ? ORDER BY created_at DESC LIMIT 25`)
       .all(sourceId, workspaceId, taskId, requesterId).map(row => ({ ...JSON.parse(str(row.data)), state: str(row.state) }))
     return { items, executions, nextCursor: rows.length > 25 ? String(rows[24]!.sequence) : null, headCursor: rows[0] ? String(rows[0].sequence) : null }
   }
