@@ -1,4 +1,5 @@
 // The contract between the renderer and the core, carried over a MessagePort.
+import type { KnowledgeSource, KnowledgeProject, KnowledgeEntry, KnowledgePage } from './knowledge'
 import type { Answer } from './questions'
 import type { WikiChange, WikiGitSetup, WikiGitStatus, WikiGitTest, WikiHit, WikiPage, WikiImport, WikiPageInfo, WikiReview, WikiSource, WikiVersion } from './types'
 import type { AppProvider, CatalogCategory, CatalogView, OwnAppGuide } from './connector-catalog'
@@ -32,6 +33,14 @@ export interface Snapshot {
 }
 
 export interface Api {
+  knowledgeSource(): KnowledgeSource | null
+  saveKnowledgeSource(p: { name: string; baseUrl: string; token: string }): Promise<KnowledgeSource>
+  removeKnowledgeSource(p: { sourceId: string }): Promise<void>
+  knowledgeProjects(p: { sourceId: string }): Promise<KnowledgeProject[]>
+  knowledgePages(p: { sourceId: string; workspace: string; project: string }): Promise<KnowledgeEntry[]>
+  knowledgeSearch(p: { sourceId: string; workspace: string; project: string; query: string }): Promise<KnowledgeEntry[]>
+  knowledgePage(p: { sourceId: string; workspace: string; project: string; path: string }): Promise<KnowledgePage>
+
   markRead(p: { conversationId: string }): void
   snapshot(): Snapshot
   olderMessages(p: { conversationId: string; before: number; through?: string }): { messages: Message[]; since: number } // a page from before `before` (or back to `through`, a message to show), with their threads; since: from when it's whole now, 0 once all of it is

@@ -10913,3 +10913,21 @@ button.agent-card__now:hover {
 .agent-models__identity { display: flex; align-items: center; gap: 10px; flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
 .agent-models__choice { display: grid; gap: 6px; flex: 2 1 300px; min-width: 0; }
 .agent-models [role="status"]:not(:empty) { margin-top: 12px; }
+
+/* External knowledge is a read-only view; the local Wiki keeps its own editor and layout. */
+.knowledge { display: grid; gap: 20px; min-width: 0; }
+.knowledge__form { display: grid; gap: 16px; max-width: 640px; }
+.knowledge__actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.knowledge__query { flex: 1; min-width: 200px; }
+.knowledge__origin { overflow-wrap: anywhere; opacity: .8; }
+.knowledge__origin span { display: block; margin-top: 6px; }
+.knowledge__list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.knowledge__entry { display: grid; gap: 6px; width: 100%; padding: 16px; text-align: left; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: inherit; overflow-wrap: anywhere; }
+.knowledge__entry:hover { background: var(--hover); }
+.knowledge__entry span { opacity: .7; font-size: 12px; }
+.knowledge__entry p { margin: 0; }
+.knowledge__page { min-width: 0; }
+.knowledge__markdown { overflow-wrap: anywhere; line-height: 1.65; }
+.knowledge__markdown pre { overflow-x: auto; padding: 16px; background: var(--hover); border-radius: 8px; }
+.knowledge__markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
+.knowledge__markdown td, .knowledge__markdown th { padding: 8px; border: 1px solid var(--border); }

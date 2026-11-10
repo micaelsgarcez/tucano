@@ -7,6 +7,14 @@ import { L } from './lang'
 import type { Method } from './rpc'
 
 export const SHAPES: Record<Method, Record<string, string>> = {
+  knowledgeSource: {},
+  saveKnowledgeSource: { name: 's', baseUrl: 's', token: 's' },
+  removeKnowledgeSource: { sourceId: 's' },
+  knowledgeProjects: { sourceId: 's' },
+  knowledgePages: { sourceId: 's', workspace: 's', project: 's' },
+  knowledgeSearch: { sourceId: 's', workspace: 's', project: 's', query: 's' },
+  knowledgePage: { sourceId: 's', workspace: 's', project: 's', path: 's' },
+
   markRead: { conversationId: 's' },
   snapshot: {},
   artifactText: { id: 's' },
@@ -216,6 +224,12 @@ const MB = 1_000_000
 export const MAX_WIKI_FILE = 20 * 1024 * 1024
 const MAX_WIKI_FILE_B64 = Math.ceil(MAX_WIKI_FILE / 3) * 4
 export const LIMITS: Partial<Record<Method, Record<string, number>>> = {
+  saveKnowledgeSource: { name: 120, baseUrl: 2048, token: 8192 },
+  removeKnowledgeSource: { sourceId: 36 },
+  knowledgeProjects: { sourceId: 36 },
+  knowledgePages: { sourceId: 36, workspace: 256, project: 256 },
+  knowledgeSearch: { sourceId: 36, workspace: 256, project: 256, query: 500 },
+  knowledgePage: { sourceId: 36, workspace: 256, project: 256, path: 2048 },
   sendMessage: { text: MB },
   answerQuestion: { text: MB },
   setTopic: { topic: 500 },
