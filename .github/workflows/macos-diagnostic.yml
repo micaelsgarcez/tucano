@@ -1,0 +1,28 @@
+name: macOS CI diagnosis
+on:
+  push:
+    branches: [fix/macos-ci-contention]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    strategy:
+      fail-fast: false
+      matrix:
+        workers: [default, two]
+    runs-on: macos-26-intel
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Runner capacity
+        run: node -e 'const os = require("node:os"); console.log({cpus: os.cpus().length, available: os.availableParallelism(), memory: os.totalmem()})'
+      - name: Isolated unread test
+        run: npx vitest run test/team-stress.test.ts -t 'is main.s rule exactly' --reporter=verbose
+      - name: Full suite
+        run: npx vitest run ${{ matrix.workers == 'two' && '--maxWorkers=2' || '' }}
