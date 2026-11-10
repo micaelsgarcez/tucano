@@ -10,7 +10,8 @@ import Markdown from 'react-markdown'
 import { safeUrl } from '../links'
 import remarkGfm from 'remark-gfm'
 import { call } from '../rpc'
-import { agentById, amAdmin, navigate, openExternal, personName, setTab, updateSettings, useStore, type State, type View, type WikiChange, type WikiFinding, type WikiGitStatus, type WikiGitTest, type WikiHit, type WikiImport, type WikiPage, type WikiPageInfo, type WikiReview, type WikiSource, type WikiVersion } from '../store'
+import { agentById, amAdmin, amOwner, navigate, openExternal, personName, setTab, updateSettings, useStore, type State, type View, type WikiChange, type WikiFinding, type WikiGitStatus, type WikiGitTest, type WikiHit, type WikiImport, type WikiPage, type WikiPageInfo, type WikiReview, type WikiSource, type WikiVersion } from '../store'
+import { KnowledgeView } from './Knowledge'
 import { Sheet, Toggle } from './Pages'
 import { AdminOnly } from './People'
 import { confirmDialog } from './Dialogs'
@@ -638,15 +639,19 @@ function WikiCanvas({ graph, selected, pending, only, panel }: { graph: Graph; s
 
 export function WikiView(): ReactNode {
   const view = useStore((s) => s.view)
+  const owner = useStore(amOwner)
+  const [external, setExternal] = useState(false)
+  useEffect(() => setExternal(false), [view])
   if (view?.kind !== 'wiki') return null
   if (view.edit) return <WikiEditor key={`edit:${view.title ?? ''}`} title={view.title} />
-  return <WikiShell view={view} />
+  if (external && owner) return <KnowledgeView back={() => setExternal(false)} />
+  return <WikiShell view={view} knowledge={owner ? () => setExternal(true) : undefined} />
 }
 
 // The search shortcut as the keyboard in front of the person says it (a browser on a server included).
 const SEARCH_KEY = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘K' : 'Ctrl K'
 
-function WikiShell({ view }: { view: WikiViewState }): ReactNode {
+function WikiShell({ view, knowledge }: { view: WikiViewState; knowledge?: () => void }): ReactNode {
   const data = useWikiData()
   const rev = useStore((s) => s.wikiRev)
   const admin = useStore(amAdmin)
@@ -743,6 +748,7 @@ function WikiShell({ view }: { view: WikiViewState }): ReactNode {
       }
       actions={
         <>
+          {knowledge && <button className="btn btn--ghost btn--sm" onClick={knowledge}>{L('Conhecimento · ai-memory', 'Knowledge · ai-memory')}</button>}
           {kinds.length > 1 && (
             <div className="wk-kinds" role="group" aria-label={L('Mostrar só um tipo', 'Show only one kind')}>
               {kinds.slice(0, 6).map(([k, n]) => (

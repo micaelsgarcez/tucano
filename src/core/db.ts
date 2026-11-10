@@ -593,6 +593,8 @@ export class Db {
           DELETE FROM secrets WHERE key LIKE 'telegram:%' OR key = 'github:proxy-key' OR key LIKE '%:oauth_verifier';
           DELETE FROM meta WHERE key LIKE 'orbit:%';
           DELETE FROM secrets WHERE key LIKE 'orbit:%';
+          DELETE FROM meta WHERE key = 'knowledge:source';
+          DELETE FROM secrets WHERE key LIKE 'knowledge:%';
           DELETE FROM person_keys;
           DELETE FROM removed_keys;
           DELETE FROM invites;

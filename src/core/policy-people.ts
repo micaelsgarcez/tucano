@@ -86,6 +86,14 @@ export const NEEDS: Record<Method, Need> = {
   orbitTasks: 'owner',
   orbitTask: 'owner',
   orbitAssignAgent: 'owner',
+  knowledgeSource: 'owner',
+  saveKnowledgeSource: 'owner',
+  removeKnowledgeSource: 'owner',
+  knowledgeProjects: 'owner',
+  knowledgePages: 'owner',
+  knowledgeSearch: 'owner',
+  knowledgePage: 'owner',
+
   // reading, and the conversations one can see (each checks it can reach the conversation)
   markRead: 'anyone',
   snapshot: 'anyone',

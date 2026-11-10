@@ -61,6 +61,7 @@ import { backup, backupIfDue, exportTeam, importTeam } from './team'
 import { applyForeignTeam, readForeignZip } from './agent-import'
 import { extractZip, zipFromBuffer, zipFromFile } from './zip'
 import { Telegram } from './telegram'
+import { Knowledge } from './knowledge'
 import { mainCipher, plainCipher, Secrets } from './secrets'
 import { Browser, type BrowserHost } from './browser'
 import { findOnPath, isWin, loginShell, onPath, openWindowsConsole, osOf, shellCommand, terminalCommand } from './platform'
@@ -726,6 +727,7 @@ function localReach(messageId: string): LocalReach | undefined {
 }
 
 const secrets = new Secrets(db, fake ? plainCipher : mainCipher(process.parentPort))
+const knowledge = new Knowledge(db, secrets)
 // The person's own apps, through agent-desktop (none on a server: no screen there).
 // Off a Mac it needs the installed apps to know each one's program.
 const desktopApps = new DesktopApps(undefined, {
@@ -1344,6 +1346,13 @@ const api: Handlers = {
   orbitTasks: ({ sourceId, projectId, cursor }) => orbit.tasks(sourceId, projectId, cursor),
   orbitTask: ({ sourceId, taskId }) => orbit.detail(sourceId, taskId),
   orbitAssignAgent: (p) => orbit.assign(p),
+  knowledgeSource: () => knowledge.source(),
+  saveKnowledgeSource: (p) => knowledge.save(p),
+  removeKnowledgeSource: (p) => knowledge.remove(p.sourceId),
+  knowledgeProjects: (p) => knowledge.projects(p.sourceId),
+  knowledgePages: (p) => knowledge.pages(p),
+  knowledgeSearch: (p) => knowledge.search(p, p.query),
+  knowledgePage: (p) => knowledge.page(p),
   markRead: ({ conversationId }, ctx) => {
     reach(ctx, conversationId)
     db.markRead(conversationId, ctx.person.id)
