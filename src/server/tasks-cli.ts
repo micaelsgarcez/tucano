@@ -1,6 +1,6 @@
 import { createPrivateKey } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { main, verifyNative } from '../tasks/cli'
 import { TaskStore } from '../tasks/store'
@@ -25,7 +25,7 @@ export function verifyRecovery(dataDir: string) {
   } finally { raw.close() }
 }
 
-if (process.argv[1]?.endsWith('/tasks.js')) {
+if (basename(process.argv[1] ?? '') === 'tasks.js') {
   try {
     const args = process.argv.slice(2)
     if (args[0] === 'verify-recovery') {

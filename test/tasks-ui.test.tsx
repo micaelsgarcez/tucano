@@ -17,6 +17,11 @@ vi.mock('../src/renderer/src/rpc', () => ({ call: rpc }))
 let fake: State
 vi.mock('../src/renderer/src/store', async original => {
   const real = await original<typeof import('../src/renderer/src/store')>()
+  navigate.mockImplementation((view: State['view']) => {
+    if (view) real.navigate(view)
+    fake = { ...fake, view }
+    root.render(<TasksPage />)
+  })
   return { ...real, useStore: <T,>(select: (s: State) => T): T => select(fake), openDm: dm, navigate, openThread }
 })
 const { getState } = await import('../src/renderer/src/store')
@@ -36,8 +41,9 @@ let history: TaskActivityPage
 let root: Root
 beforeEach(() => {
   setLang('en')
+  Object.assign(window, { location: { hash: '', pathname: '/', search: '' }, history: { replaceState: (_: unknown, __: string, url: string) => { window.location.hash = url.startsWith('#') ? url : '' } } })
   history = { items: [], executions: [], nextCursor: null, headCursor: null }
-  fake = { ...getState(), people: [owner], you: owner.id, agents: [agent('executor', 'Aster'), agent('archived', 'Retired agent', true)] }
+  fake = { ...getState(), view: { kind: 'tasks' }, people: [owner], you: owner.id, agents: [agent('executor', 'Aster'), agent('archived', 'Retired agent', true)] }
   rpc.mockImplementation(async (method: string, params?: { cursor?: string; agentId?: string | null }) => {
     switch (method) {
       case 'tasksSource': return source
@@ -94,6 +100,7 @@ it('groups configured statuses across projects and shows card metadata with hone
 it('opens a full detail with Markdown, properties, service comments and archived responsibility', async () => {
   await act(async () => root.render(<TasksPage />))
   await click('Review endpoint')
+  expect(window.location.hash).toBe('#tasks/task')
   expect(document.querySelector('.tasks-detail-main h2')?.textContent).toBe('Review endpoint')
   expect(document.querySelector('.tasks-properties')?.textContent).toContain('Alex Human')
   expect(document.querySelector('.md strong')?.textContent).toBe('Private description')
@@ -103,6 +110,7 @@ it('opens a full detail with Markdown, properties, service comments and archived
   expect(document.body.textContent).toContain('Comment · service account')
   expect(document.querySelector('.tasks-timeline .md strong')?.textContent).toBe('Build received')
   await click('Back to board')
+  expect(window.location.hash).toBe('#tasks')
   expect(document.querySelector('.tasks-board')).not.toBeNull()
 })
 
@@ -283,6 +291,7 @@ it('creates a local task and opens it without assigning or starting an agent', a
   await type('Description', 'Acceptance criteria')
   await submit('New task')
   expect(rpc).toHaveBeenCalledWith('tasksCreate', expect.objectContaining({ sourceId: source.id, projectId: 'project', title: 'New local task', description: 'Acceptance criteria' }))
+  expect(window.location.hash).toBe('#tasks/created')
   expect(document.querySelector('.tasks-detail-main h2')?.textContent).toBe('New local task')
   expect(rpc.mock.calls.some(([method]) => method === 'tasksAssignAgent' || method === 'tasksStart')).toBe(false)
 })
@@ -353,4 +362,20 @@ it('opens a linked task directly even when absent from the first board page', as
   await click('Back to board')
   expect(document.querySelector('.tasks-board')).not.toBeNull()
   expect(navigate).toHaveBeenCalledWith({ kind: 'tasks' })
+})
+
+it('changes the displayed task when navigation updates an already mounted board', async () => {
+  await act(async () => root.render(<TasksPage />))
+  await click('Load more tasks')
+  const original = rpc.getMockImplementation()!
+  rpc.mockImplementation((method, params) => method === 'tasksTask'
+    ? Promise.resolve({ ...detail, task: { ...detail.task, id: params.taskId, title: params.taskId } })
+    : original(method, params))
+  await act(async () => navigate({ kind: 'tasks', taskId: 'linked-one' }))
+  expect(document.querySelector('.tasks-detail-main h2')?.textContent).toBe('linked-one')
+  await act(async () => navigate({ kind: 'tasks', taskId: 'linked-two' }))
+  expect(document.querySelector('.tasks-detail-main h2')?.textContent).toBe('linked-two')
+  await click('Back to board')
+  expect(document.body.textContent).toContain('Second task')
+  expect(document.body.textContent).not.toContain('partial counts')
 })

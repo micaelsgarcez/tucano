@@ -137,8 +137,7 @@ function TaskMarkdown({ text }: { text: string }): ReactNode {
 function TaskItems({ source, data, projectId, onProject }: { source: TaskSource; data: TaskBoardData; projectId: string; onProject: (id: string) => void }): ReactNode {
   const [items, setItems] = useState<TaskDetail[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
-  const linkedTask = useStore(state => state.view?.kind === 'tasks' ? state.view.taskId : undefined)
-  const [selected, setSelected] = useState(linkedTask ?? '')
+  const selected = useStore(state => state.view?.kind === 'tasks' ? state.view.taskId : undefined)
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -168,8 +167,8 @@ function TaskItems({ source, data, projectId, onProject }: { source: TaskSource;
       setCursor(page.nextCursor)
     } catch (error) { if (active.current) { setError(failure(error)); setItems([]); setCursor(null) } } finally { if (active.current) setLoading(false) }
   }
-  if (creating) return <div className="tasks-create"><h2>{L('Nova tarefa', 'New task')}</h2><TaskForm source={source} data={data} projectId={projectId} onCancel={() => setCreating(false)} onSave={detail => { setItems(previous => [detail, ...previous]); setCreating(false); setSelected(detail.task.id) }} /></div>
-  if (selected) return <TaskDetailView key={selected} source={source} taskId={selected} data={data} onBack={() => { setSelected(''); navigate({ kind: 'tasks' }) }} onChange={detail => setItems(previous => previous.map(item => item.task.id === detail.task.id ? detail : item))} />
+  if (creating) return <div className="tasks-create"><h2>{L('Nova tarefa', 'New task')}</h2><TaskForm source={source} data={data} projectId={projectId} onCancel={() => setCreating(false)} onSave={detail => { setItems(previous => [detail, ...previous]); setCreating(false); navigate({ kind: 'tasks', taskId: detail.task.id }) }} /></div>
+  if (selected) return <TaskDetailView key={selected} source={source} taskId={selected} data={data} onBack={() => navigate({ kind: 'tasks' })} onChange={detail => setItems(previous => previous.map(item => item.task.id === detail.task.id ? detail : item))} />
   const statuses = data.statuses.filter(status => !projectId || status.projectId === projectId).toSorted((a, b) => categoryOrder.indexOf(a.category) - categoryOrder.indexOf(b.category) || a.position - b.position)
   const groups = new Map<string, { status?: TaskStatus; statusIds: string[]; tasks: TaskDetail[] }>()
   for (const status of statuses) {
@@ -206,7 +205,7 @@ function TaskItems({ source, data, projectId, onProject }: { source: TaskSource;
           const status = data.statuses.find(status => status.id === task.statusId)
           const due = task.dueAt && new Date(task.dueAt)
           const overdue = due && due.getTime() < Date.now() && !closed(status)
-          return <button className="tasks-task" key={task.id} ref={node => { if (node) cards.current.set(task.id, node); else cards.current.delete(task.id) }} onClick={() => { lastSelected.current = task.id; setSelected(task.id) }}>
+          return <button className="tasks-task" key={task.id} ref={node => { if (node) cards.current.set(task.id, node); else cards.current.delete(task.id) }} onClick={() => { lastSelected.current = task.id; navigate({ kind: 'tasks', taskId: task.id }) }}>
             <span className="tasks-card-head"><span><StatusIcon status={status} />{task.identifier}</span><span className="tasks-card-people">{task.assigneeIds.map(id => { const name = data.members.find(member => member.id === id)?.name ?? L('Responsável indisponível', 'Unavailable assignee'); return <span className="tasks-human-avatar" key={id} title={name} aria-label={name}>{name.slice(0, 1)}</span> })}<Priority priority={task.priority} /></span></span>
             <strong>{task.title}</strong>
             {!!task.labelIds.length && <span className="tasks-labels">{task.labelIds.map(id => { const label = data.labels.find(label => label.id === id); return label && <span className="tasks-label" key={id}><i style={{ backgroundColor: label.color }} />{label.name}</span> })}</span>}

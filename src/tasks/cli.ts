@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { importOrbit } from './import-orbit'
 import { TaskStore } from './store'
 
@@ -81,7 +81,7 @@ export function main(args: string[]): void {
     } else throw new Error('Use import-orbit, verify-native, issue-token or revoke-token')
   } finally { store.close() }
 }
-if (process.argv[1]?.endsWith('/cli.ts')) {
+if (basename(process.argv[1] ?? '') === 'cli.ts') {
   try { main(process.argv.slice(2)) }
   catch (error) { console.error(error instanceof Error ? error.message : 'Task command failed'); process.exitCode = 1 }
 }
