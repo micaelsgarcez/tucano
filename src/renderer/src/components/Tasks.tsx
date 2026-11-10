@@ -1,3 +1,4 @@
+import './tasks.css'
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
