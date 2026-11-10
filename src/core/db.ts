@@ -1287,8 +1287,17 @@ export class Db {
   }
 
   // Every receipt since `since`, oldest first: agent replies, and the router's and memory's turns.
-  receiptsSince(since: number): (Receipt & { agentId: string; engine: string; messageId: string; at: number })[] {
-    return (this.db.prepare('SELECT * FROM receipts WHERE at >= ? ORDER BY at').all(since) as Row[]).map((r) => ({
+  receiptsSince(since: number): (Receipt & { receiptId: number; agentId: string; engine: string; messageId: string; at: number })[] {
+    return (this.db.prepare('SELECT * FROM receipts WHERE at >= ? ORDER BY at').all(since) as Row[]).map(r => this.receipt(r))
+  }
+
+  receiptsForMessage(messageId: string): ReturnType<Db['receiptsSince']> {
+    return (this.db.prepare('SELECT * FROM receipts WHERE message_id = ? ORDER BY id').all(messageId) as Row[]).map(r => this.receipt(r))
+  }
+
+  private receipt(r: Row): ReturnType<Db['receiptsSince']>[number] {
+    return {
+      receiptId: Number(r['id']),
       agentId: str(r['agent_id']),
       engine: str(r['engine']),
       messageId: str(r['message_id']),
@@ -1299,7 +1308,7 @@ export class Db {
       ms: Number(r['ms']),
       apiCostUsd: r['api_cost_usd'] == null ? undefined : Number(r['api_cost_usd']),
       at: Number(r['at'])
-    }))
+    }
   }
 
   // Counted tokens per piece of work (an issue like OAB-65) from `since` (to `until`), biggest first.
