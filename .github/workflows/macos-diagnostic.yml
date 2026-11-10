@@ -25,5 +25,12 @@ jobs:
           node -e 'const os = require("node:os"); console.log({cpus: os.cpus().length, available: os.availableParallelism(), memory: os.totalmem()})'
       - name: Isolated unread test
         run: npx vitest run test/team-stress.test.ts -t 'is main.s rule exactly' --reporter=verbose
-      - name: Full suite
-        run: npx vitest run ${{ matrix.workers == 'two' && '--maxWorkers=2' || '' }}
+      - name: Full suite crossover
+        run: |
+          if [ "${{ matrix.workers }}" = two ]; then
+            npx vitest run --maxWorkers=2
+            npx vitest run
+          else
+            npx vitest run
+            npx vitest run --maxWorkers=2
+          fi
