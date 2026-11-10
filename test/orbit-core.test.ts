@@ -22,7 +22,7 @@ it('keeps the owner source out of snapshots and broadcasts, and denies non-owner
   expect(await owner.call('orbitSource')).toEqual(source)
   const params = { sourceId: source.id, projectId: '22222222-2222-4222-8222-222222222222', taskId: '33333333-3333-4333-8333-333333333333', role: 'executor', agentId: null, baseUrl: 'https://orbit.example.com', workspaceId: source.workspaceId, token: 'another-token' }
   for (const client of [member, admin]) {
-    for (const method of ['orbitSource', 'orbitSaveSource', 'orbitProjects', 'orbitProjectData', 'orbitTasks', 'orbitTask', 'orbitAssignAgent']) await expect(client.call(method, params)).rejects.toThrow()
+    for (const method of ['orbitSource', 'orbitSaveSource', 'orbitProjects', 'orbitProjectData', 'orbitTasks', 'orbitTask', 'orbitAssignAgent', 'orbitBoardData', 'orbitComments', 'orbitActivity', 'orbitStart']) await expect(client.call(method, params)).rejects.toThrow()
   }
   for (const client of [owner, admin, member]) {
     const publicData = JSON.stringify({ snapshot: await client.call('snapshot'), events: client.events })

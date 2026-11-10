@@ -19,7 +19,7 @@ const secondProject = '33333333-3333-4333-8333-333333333333'
 const taskId = '44444444-4444-4444-8444-444444444444'
 const statusId = '55555555-5555-4555-8555-555555555555'
 const memberId = '66666666-6666-4666-8666-666666666666'
-const taskWire = () => ({ id: taskId, project_id: projectId, status_id: statusId, identifier: 'APP-1', title: 'Review endpoint', description: '# Task\nPrivate task body', assignee_ids: [memberId] })
+const taskWire = () => ({ id: taskId, project_id: projectId, status_id: statusId, identifier: 'APP-1', title: 'Review endpoint', description: '# Task\nPrivate task body', assignee_ids: [memberId], label_ids: [], priority: 'medium', due_at: null, created_at: '2026-11-10T12:00:00Z', updated_at: '2026-11-10T13:00:00Z' })
 const agent = (id: string, archived = false): Agent => ({ id, name: id, handle: id, role: '', color: 'sky', instructions: '', modelId: 'sonnet', effort: 'low', limit: 10000, used: 0, grants: {}, memory: 'auto', computer: false, archived })
 const list = (items: unknown[], next_cursor: string | null = null): unknown => ({ items, next_cursor })
 const json = (res: ServerResponse, value: unknown): void => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)) }
@@ -38,8 +38,9 @@ beforeEach(async () => {
   requests = []
   reply = (req, res) => {
     const url = new URL(req.url ?? '/', baseUrl)
-    if (url.pathname.endsWith('/projects')) json(res, list([{ id: projectId, name: 'Application', key: 'APP' }]))
-    else if (url.pathname.endsWith('/statuses')) json(res, list([{ id: statusId, project_id: projectId, name: 'To do' }]))
+    if (url.pathname.endsWith('/projects')) json(res, list([{ id: projectId, name: 'Application', key: 'APP', color: '#aabbcc' }]))
+    else if (url.pathname.endsWith('/statuses')) json(res, list([{ id: statusId, project_id: projectId, name: 'To do', color: '#aabbcc', category: 'unstarted', position: 1 }]))
+    else if (url.pathname.endsWith('/labels')) json(res, list([]))
     else if (url.pathname.endsWith('/members')) json(res, list([{ user_id: memberId, display_name: 'Alex' }]))
     else if (url.pathname.endsWith('/tasks')) json(res, list([taskWire()]))
     else if (url.pathname.endsWith(`/tasks/${taskId}`)) json(res, taskWire())
@@ -63,8 +64,8 @@ afterEach(async () => {
 
 describe('Orbit projects and local agent responsibilities', () => {
   it('reads the public v1 wire format, cursor and members using only GET', async () => {
-    expect(await orbit.projects(source.id)).toEqual([{ id: projectId, name: 'Application', key: 'APP' }])
-    expect(await orbit.projectData(source.id, projectId)).toEqual({ statuses: [{ id: statusId, projectId, name: 'To do' }], members: [{ id: memberId, name: 'Alex' }] })
+    expect(await orbit.projects(source.id)).toEqual([{ id: projectId, name: 'Application', key: 'APP', color: '#aabbcc' }])
+    expect(await orbit.projectData(source.id, projectId)).toEqual({ statuses: [{ id: statusId, projectId, name: 'To do', color: '#aabbcc', category: 'unstarted', position: 1 }], members: [{ id: memberId, name: 'Alex' }], labels: [] })
     expect(await orbit.detail(source.id, taskId)).toMatchObject({ task: { id: taskId, assigneeIds: [memberId] }, assignments: { executor: null, reviewer: null } })
     reply = (_, res) => json(res, list([taskWire()], 'opaque /?=cursor'))
     expect((await orbit.tasks(source.id, projectId)).nextCursor).toBe('opaque /?=cursor')
@@ -148,7 +149,7 @@ describe('Orbit projects and local agent responsibilities', () => {
   it('reads all metadata pages and refuses a repeated cursor', async () => {
     reply = (req, res) => {
       const url = new URL(req.url ?? '', baseUrl)
-      json(res, url.searchParams.has('cursor') ? list([{ id: secondProject, name: 'Second', key: 'TWO' }]) : list([{ id: projectId, name: 'First', key: 'ONE' }], 'second'))
+      json(res, url.searchParams.has('cursor') ? list([{ id: secondProject, name: 'Second', key: 'TWO', color: '#aabbcc' }]) : list([{ id: projectId, name: 'First', key: 'ONE', color: '#aabbcc' }], 'second'))
     }
     expect(await orbit.projects(source.id)).toHaveLength(2)
     reply = (_, res) => json(res, list([], 'repeat'))
@@ -207,7 +208,7 @@ describe('Orbit projects and local agent responsibilities', () => {
     const owner = db.owner()
     const admin: Person = { ...owner, id: 'admin', role: 'admin' }
     const member: Person = { ...owner, id: 'member', role: 'member' }
-    const methods: Method[] = ['orbitSource', 'orbitSaveSource', 'orbitProjects', 'orbitProjectData', 'orbitTasks', 'orbitTask', 'orbitAssignAgent']
+    const methods: Method[] = ['orbitSource', 'orbitSaveSource', 'orbitProjects', 'orbitProjectData', 'orbitTasks', 'orbitTask', 'orbitAssignAgent', 'orbitBoardData', 'orbitComments', 'orbitActivity', 'orbitStart']
     for (const method of methods) {
       expect(NEEDS[method]).toBe('owner')
       expect(() => admit(owner, method)).not.toThrow()
@@ -231,4 +232,36 @@ describe('Orbit projects and local agent responsibilities', () => {
     expect(readFileSync(file).toString('utf8')).not.toContain('fixture-read-token')
     expect(orbit.source()).toEqual(source)
   })
+})
+
+it('loads board definitions and validates the approved project set in the all-project page', async () => {
+  expect(await orbit.boardData(source.id)).toMatchObject({ projects: [{ id: projectId, color: '#aabbcc' }], labels: [], statuses: [{ category: 'unstarted', position: 1 }], members: [{ name: 'Alex' }] })
+  const original = reply
+  reply = (req, res) => req.url?.includes('/tasks?') ? json(res, list([taskWire(), { ...taskWire(), id: secondProject, project_id: secondProject }])) : original(req, res)
+  await expect(orbit.tasks(source.id, null)).rejects.toThrow('Invalid response')
+  reply = original
+  expect((await orbit.tasks(source.id, null)).items[0]?.task.priority).toBe('medium')
+  expect(new URL(requests.at(-1)!.path, baseUrl).searchParams.has('project_id')).toBe(false)
+})
+
+it('reads scoped paged comments and service authors without impersonating a Tucano agent', async () => {
+  const original = reply
+  const body = { id: secondProject, task_id: taskId, author_id: memberId, author_service_account: { id: memberId, name: 'External bot' }, parent_id: null, body: 'Verified report', created_at: '2026-11-10T12:00:00Z', updated_at: '2026-11-10T12:00:00Z' }
+  reply = (req, res) => req.url?.includes('/comments') ? json(res, list([body], 'comments-next')) : original(req, res)
+  expect(await orbit.comments(source.id, taskId)).toMatchObject({ items: [{ serviceAccount: { name: 'External bot' }, body: 'Verified report' }], nextCursor: 'comments-next' })
+  await orbit.comments(source.id, taskId, 'comments-next')
+  expect(new URL(requests.at(-1)!.path, baseUrl).searchParams.get('cursor')).toBe('comments-next')
+  reply = (req, res) => req.url?.includes('/comments') ? json(res, list([{ ...body, task_id: secondProject }])) : original(req, res)
+  await expect(orbit.comments(source.id, taskId)).rejects.toThrow('Invalid response')
+})
+
+it('reauthorizes activity on every read and never exposes another person’s DM', async () => {
+  const owner = db.owner()
+  db.createConversation({ id: 'foreign', kind: 'dm', name: 'executor', members: ['executor'], owner: 'someone-else' })
+  const root = { id: 'root', conversationId: 'foreign', author: { kind: 'person' as const, id: owner.id }, at: 1, text: 'Request' }
+  db.createTaskExecution({ id: 'execution', sourceId: source.id, workspaceId, taskId, requestId: 'request', requesterId: owner.id, role: 'executor', agentId: 'executor', agentName: 'Executor', conversationId: 'foreign', rootMessageId: 'root', createdAt: 1, state: 'queued' }, root)
+  db.saveMessage({ id: 'message', conversationId: 'foreign', threadId: 'root', author: { kind: 'agent', id: 'executor' }, at: 2, text: 'private', run: { attemptId: 'attempt', status: 'done', steps: [] } })
+  expect(await orbit.activity(source.id, taskId, owner)).toMatchObject({ items: [], executions: [] })
+  reply = (_, res) => { res.statusCode = 403; res.end() }
+  await expect(orbit.activity(source.id, taskId, owner)).rejects.toThrow('Could not read Orbit')
 })

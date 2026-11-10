@@ -1,3 +1,5 @@
+import { L } from '../shared/lang'
+import type { OrbitActivity, OrbitExecution, OrbitActivityPage } from '../shared/orbit'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { cleanRules, isAutonomy } from '../shared/actions'
 import { randomUUID } from 'node:crypto'
@@ -498,6 +500,23 @@ export const MIGRATIONS = [
   UPDATE agents SET fallback_model = 'antigravity:' || substr(fallback_model, 8) WHERE fallback_model LIKE 'gemini:%';
   UPDATE receipts SET engine = 'antigravity' WHERE engine = 'gemini';
   UPDATE receipts SET model = 'antigravity:' || substr(model, 8) WHERE model LIKE 'gemini:%';
+  `,
+  `
+  CREATE TABLE task_executions (
+    id TEXT PRIMARY KEY, source_id TEXT NOT NULL, workspace_id TEXT NOT NULL, task_id TEXT NOT NULL,
+    requester_id TEXT NOT NULL, request_id TEXT NOT NULL, role TEXT NOT NULL,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    root_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL, state TEXT NOT NULL, pending INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL,
+    UNIQUE(source_id, requester_id, request_id)
+  );
+  CREATE INDEX task_executions_by_task ON task_executions(source_id, workspace_id, task_id, requester_id);
+  CREATE TABLE task_activity (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    execution_id TEXT NOT NULL REFERENCES task_executions(id) ON DELETE CASCADE,
+    data TEXT NOT NULL
+  );
+  CREATE INDEX task_activity_by_execution ON task_activity(execution_id, sequence);
   `
 ]
 
@@ -1116,6 +1135,7 @@ export class Db {
   }
 
   saveMessage(m: Message): void {
+    this.tx(() => {
     this.db
       .prepare(
         `INSERT INTO messages (id, conversation_id, author_kind, author_id, text, at, run, routine, thread_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1132,6 +1152,102 @@ export class Db {
         m.routine ? JSON.stringify(m.routine) : null,
         m.threadId ?? null
       )
+    this.projectTaskAttempt(m)
+    })
+  }
+
+  taskExecution(conversationId: string, rootMessageId: string | undefined): OrbitExecution | undefined {
+    if (!rootMessageId) return undefined
+    const row = this.db.prepare('SELECT data, state FROM task_executions WHERE conversation_id = ? AND root_message_id = ?').get(conversationId, rootMessageId)
+    return row ? { ...JSON.parse(str(row.data)), state: str(row.state) } : undefined
+  }
+
+  createTaskExecution(execution: OrbitExecution, root: Message): { execution: OrbitExecution; created: boolean } {
+    return this.tx(() => {
+      const previous = this.db.prepare('SELECT data, state FROM task_executions WHERE source_id = ? AND requester_id = ? AND request_id = ?').get(execution.sourceId, execution.requesterId, execution.requestId)
+      if (previous) {
+        const saved: OrbitExecution = { ...JSON.parse(str(previous.data)), state: str(previous.state) }
+        if (saved.taskId !== execution.taskId || saved.role !== execution.role || saved.workspaceId !== execution.workspaceId) throw new Error(L('Este pedido já pertence a outra tarefa.', 'Request already belongs to another task'))
+        return { execution: saved, created: false }
+      }
+      const active = this.db.prepare(`SELECT e.data, e.state FROM task_executions e WHERE e.source_id = ? AND e.workspace_id = ? AND e.task_id = ? AND e.requester_id = ? AND e.role = ? AND
+        (e.state = 'queued' OR e.pending > 0 OR EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = e.conversation_id AND m.thread_id = e.root_message_id AND json_extract(m.run, '$.status') IN ('working','waiting_input','waiting_approval','paused'))) LIMIT 1`)
+        .get(execution.sourceId, execution.workspaceId, execution.taskId, execution.requesterId, execution.role)
+      if (active) throw new Error(L('Esta tarefa já tem trabalho ativo para este papel. Abra a atividade para continuar.', 'This task already has active work for this role. Open its activity to continue.'))
+      this.saveMessage(root)
+      this.db.prepare('INSERT INTO task_executions (id,source_id,workspace_id,task_id,requester_id,request_id,role,conversation_id,root_message_id,created_at,state,data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(execution.id, execution.sourceId, execution.workspaceId, execution.taskId, execution.requesterId, execution.requestId, execution.role, execution.conversationId, execution.rootMessageId, execution.createdAt, execution.state, JSON.stringify(execution))
+      return { execution, created: true }
+    })
+  }
+
+  queueTaskExecution(id: string): void {
+    this.db.prepare("UPDATE task_executions SET state = 'queued', pending = pending + 1 WHERE id = ?").run(id)
+  }
+
+  finishTaskExecution(id: string): void {
+    this.db.prepare("UPDATE task_executions SET pending = MAX(0, pending - 1), state = CASE WHEN state = 'queued' AND pending <= 1 THEN 'interrupted' ELSE state END WHERE id = ?").run(id)
+  }
+
+  private projectTaskAttempt(message: Message): void {
+    const run = message.run
+    if (message.author.kind !== 'agent' || !run?.attemptId) return
+    const execution = this.taskExecution(message.conversationId, message.threadId)
+    if (!execution) return
+    this.db.prepare("UPDATE task_executions SET state = 'started' WHERE id = ?").run(execution.id)
+    const id = `attempt:${run.attemptId}`
+    const old = this.db.prepare('SELECT data FROM task_activity WHERE id = ?').get(id)
+    const previous: OrbitActivity | undefined = old ? JSON.parse(str(old.data)) : undefined
+    // Answering a question closes its message, not the work the earlier attempt performed.
+    const item: OrbitActivity = {
+      kind: 'attempt', id, executionId: execution.id, attemptId: run.attemptId,
+      at: previous?.at ?? Date.now(), agentId: message.author.id,
+      agentName: previous?.agentName ?? this.agent(message.author.id)?.name ?? execution.agentName,
+      role: execution.role, status: previous?.kind === 'attempt' && previous.status !== 'working' ? previous.status : run.status, steps: run.steps.map(({ id, status }) => ({ id, status })),
+      evidence: { conversationId: execution.conversationId, rootMessageId: execution.rootMessageId, messageId: message.id, stepIds: run.steps.filter(s => s.status !== 'running').map(s => s.id) }
+    }
+    const data = JSON.stringify(item)
+    if (old?.data === data) return
+    this.db.prepare('INSERT INTO task_activity (id,execution_id,data) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data = excluded.data, sequence = (SELECT MAX(sequence) + 1 FROM task_activity)').run(id, execution.id, data)
+  }
+
+  taskReport(message: Message, input: { key: string; action: string; result: string; nextStep: string }): string {
+    const execution = this.taskExecution(message.conversationId, message.threadId)
+    const attemptId = message.run?.attemptId
+    if (!execution || !attemptId || message.author.kind !== 'agent') throw new Error(L('Nenhuma execução vinculada.', 'No task execution'))
+    if (Object.values(input).some(value => typeof value !== 'string' || !value.trim() || value.length > 4000) || input.key.length > 100) throw new Error(L('Relatório de tarefa inválido.', 'Invalid task report'))
+    const id = `report:${attemptId}:${input.key}`
+    const agentId = message.author.id
+    return this.tx(() => {
+      const old = this.db.prepare('SELECT data FROM task_activity WHERE id = ?').get(id)
+      if (old) {
+        const saved: OrbitActivity = JSON.parse(str(old.data))
+        if (saved.kind !== 'report' || saved.action !== input.action || saved.result !== input.result || saved.nextStep !== input.nextStep) throw new Error(L('Esta chave de relatório já foi usada.', 'Report key already used'))
+        return id
+      }
+      const reports = this.db.prepare("SELECT data FROM task_activity WHERE execution_id = ? AND json_extract(data, '$.attemptId') = ? AND json_extract(data, '$.kind') = 'report'").all(execution.id, attemptId)
+      const used = new Set(reports.flatMap(row => { const item: OrbitActivity = JSON.parse(str(row.data)); return item.evidence.stepIds }))
+      const item: OrbitActivity = {
+        kind: 'report', id, executionId: execution.id, attemptId, at: Date.now(), agentId,
+        agentName: this.agent(agentId)?.name ?? execution.agentName, role: execution.role,
+        action: input.action, result: input.result, nextStep: input.nextStep,
+        evidence: { conversationId: execution.conversationId, rootMessageId: execution.rootMessageId, messageId: message.id,
+          stepIds: message.run!.steps.filter(step => step.status !== 'running' && !used.has(step.id)).map(step => step.id) }
+      }
+      this.db.prepare('INSERT INTO task_activity (id,execution_id,data) VALUES (?,?,?)').run(id, execution.id, JSON.stringify(item))
+      return id
+    })
+  }
+
+  taskActivity(sourceId: string, workspaceId: string, taskId: string, requesterId: string, cursor?: string): OrbitActivityPage {
+    if (cursor !== undefined && (!/^[0-9]{1,16}$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) throw new Error(L('Cursor de atividade inválido.', 'Invalid activity cursor'))
+    const rows = this.db.prepare(`SELECT a.sequence, a.data FROM task_activity a JOIN task_executions e ON e.id = a.execution_id
+      WHERE e.source_id = ? AND e.workspace_id = ? AND e.task_id = ? AND e.requester_id = ? AND a.sequence < ? ORDER BY a.sequence DESC LIMIT 26`)
+      .all(sourceId, workspaceId, taskId, requesterId, cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER)
+    const items: OrbitActivity[] = rows.slice(0, 25).map(row => JSON.parse(str(row.data)))
+    const executions: OrbitExecution[] = this.db.prepare(`SELECT data, state FROM task_executions WHERE source_id = ? AND workspace_id = ? AND task_id = ? AND requester_id = ? ORDER BY created_at DESC LIMIT 25`)
+      .all(sourceId, workspaceId, taskId, requesterId).map(row => ({ ...JSON.parse(str(row.data)), state: str(row.state) }))
+    return { items, executions, nextCursor: rows.length > 25 ? String(rows[24]!.sequence) : null, headCursor: rows[0] ? String(rows[0].sequence) : null }
   }
 
   // The replies whose run is in one of these states, oldest first. Found in SQL: the rest of
@@ -1146,6 +1262,7 @@ export class Db {
 
   // Runs that were working when the app closed can't continue: their CLI process is gone.
   interruptStaleRuns(): number {
+    this.db.prepare("UPDATE task_executions SET state = 'interrupted', pending = 0 WHERE state = 'queued' OR pending > 0").run()
     let n = 0
     for (const m of this.messagesWithRun(['working'])) {
       if (m.run?.status !== 'working') continue

@@ -166,6 +166,7 @@ export interface Receipt {
 export type RunStatus = 'working' | 'waiting_input' | 'waiting_approval' | 'done' | 'stopped' | 'limit_reached' | 'failed' | 'interrupted' | 'paused'
 
 export interface Run {
+  attemptId?: string
   status: RunStatus
   steps: Step[]
   endedAt?: number // when this reply ended, however it ended: where the conversation shows it (saidAt)
