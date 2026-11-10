@@ -1,6 +1,6 @@
 # Maintaining this fork
 
-This fork keeps Tucano's server, agents, conversations and tool permissions. Its current additions are named GitHub connections, the read-only ai-memory view and the Orbit task view with local executor/reviewer assignments. ai-memory and Orbit remain separate services and sources of truth.
+This fork keeps Tucano's server, agents, conversations and tool permissions. Its current additions are named GitHub connections, the read-only ai-memory view and the Orbit board and task details with local executor/reviewer assignments and task-bound agent reports. ai-memory and Orbit remain separate services and sources of truth.
 
 The initial fork base is upstream v0.2.24 (`35db1c360e5178ee7daf6c8a635a79ae031fcf59`). Keep the upstream remote and license history intact. Deployment credentials, project inventories and private endpoints do not belong in this public repository.
 
@@ -14,6 +14,10 @@ The initial fork base is upstream v0.2.24 (`35db1c360e5178ee7daf6c8a635a79ae031f
 6. Back up the existing installation, then rehearse upgrade, restart and restoration of the pre-upgrade copy in isolated volumes. Verify conversations, credentials, grants, assignments and schema compatibility before deploying.
 
 Each external service can be updated independently. Recheck the adapter contract when updating ai-memory or Orbit; do not silently convert an authorization failure into an empty result.
+
+## Database migration history
+
+Fork migration 39 adds `task_executions` and `task_activity`. Once deployed, migration positions are immutable: never replace or renumber this migration when upstream introduces its own migration 39. Reconcile new upstream migrations after the installed fork history, preserving their dependency order. Test the installed fork database through the candidate migration and restart, and test rollback with the untouched pre-upgrade copy and its matching executable. Do not infer compatibility from a clean-database test.
 
 ## Server deployment boundary
 
