@@ -1,3 +1,4 @@
+import type { OrbitSource, OrbitProject, OrbitProjectData, OrbitTaskPage, OrbitTaskDetail } from './orbit'
 // The contract between the renderer and the core, carried over a MessagePort.
 import type { KnowledgeSource, KnowledgeProject, KnowledgeEntry, KnowledgePage } from './knowledge'
 import type { Answer } from './questions'
@@ -33,6 +34,13 @@ export interface Snapshot {
 }
 
 export interface Api {
+  orbitSource(): OrbitSource | null
+  orbitSaveSource(p: { baseUrl: string; workspaceId: string; token: string }): Promise<OrbitSource>
+  orbitProjects(p: { sourceId: string }): Promise<OrbitProject[]>
+  orbitProjectData(p: { sourceId: string; projectId: string }): Promise<OrbitProjectData>
+  orbitTasks(p: { sourceId: string; projectId: string; cursor?: string }): Promise<OrbitTaskPage>
+  orbitTask(p: { sourceId: string; taskId: string }): Promise<OrbitTaskDetail>
+  orbitAssignAgent(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; agentId: string | null }): Promise<OrbitTaskDetail>
   knowledgeSource(): KnowledgeSource | null
   saveKnowledgeSource(p: { name: string; baseUrl: string; token: string }): Promise<KnowledgeSource>
   removeKnowledgeSource(p: { sourceId: string }): Promise<void>

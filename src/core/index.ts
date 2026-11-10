@@ -1,3 +1,4 @@
+import { Orbit } from './orbit'
 // The core runs in an Electron utility process: database, engines and runs
 // live here so the window never waits on agent work. The renderer talks to it
 // over a MessagePort handed out by the main process.
@@ -1335,7 +1336,16 @@ const titleUnavailable = (title: string): string => L(`Não dá pra usar o títu
 const nameOf = (ctx: Ctx): string => (ctx.person.role === 'owner' ? settings().workspaceName : ctx.person.name) || L('Você', 'You')
 const emitPeople = (): void => emit({ type: 'people', people: db.people(), former: db.formerPeople() })
 
+const orbit = new Orbit(db, secrets)
+
 const api: Handlers = {
+  orbitSource: () => orbit.source(),
+  orbitSaveSource: (p) => orbit.save(p),
+  orbitProjects: ({ sourceId }) => orbit.projects(sourceId),
+  orbitProjectData: ({ sourceId, projectId }) => orbit.projectData(sourceId, projectId),
+  orbitTasks: ({ sourceId, projectId, cursor }) => orbit.tasks(sourceId, projectId, cursor),
+  orbitTask: ({ sourceId, taskId }) => orbit.detail(sourceId, taskId),
+  orbitAssignAgent: (p) => orbit.assign(p),
   knowledgeSource: () => knowledge.source(),
   saveKnowledgeSource: (p) => knowledge.save(p),
   removeKnowledgeSource: (p) => knowledge.remove(p.sourceId),
