@@ -31,35 +31,39 @@ export async function reconcileGithubDelivery(
     if (typeof installation.suspended_at !== 'string') fail(502, 'Invalid GitHub installation state')
     return { ...common, ...retryable, kind: 'access', installationState: 'suspended', repositories: [] }
   }
-  const issued = await request(`/app/installations/${delivery.installationId}/access_tokens`, jwt, 'POST')
-  const token = string(issued?.token)
-  if (!token) fail(502, 'Missing GitHub installation token')
-  const repositories: { repositoryId: string; repositoryFullName: string; accessible: boolean }[] = []
-  // Bound work and ignore API-provided pagination URLs, which must never become fetch targets.
-  for (let page = 1; ; page++) {
-    const result = await request(`/installation/repositories?per_page=100&page=${page}`, token)
-    if (!Array.isArray(result?.repositories)) fail(502, 'Invalid GitHub repositories')
-    for (const value of result.repositories) {
-      const repository = object(value)
-      repositories.push({ repositoryId: githubId(repository.id), repositoryFullName: string(repository.full_name), accessible: true })
+  if (delivery.kind === 'installation' || delivery.kind === 'access') return { ...common, kind: 'access', installationState: 'active', repositories: [] }
+  let token: string | undefined
+  async function repositoryAccess(repositoryId: string, repositoryFullName: string) {
+    const parts = repositoryFullName.split('/')
+    if (parts.length !== 2 || parts.some(part => !/^[\w.-]+$/.test(part) || part === '.' || part === '..')) fail(502, 'Invalid GitHub repository name')
+    const path = `/repos/${parts.map(encodeURIComponent).join('/')}`
+    const denied = { repositoryId, repositoryFullName, accessible: false }
+    // Public repository metadata alone does not prove access by this installation.
+    const membership = await request(`${path}/installation`, jwt, 'GET', true)
+    if (!membership) return denied
+    if (githubId(membership.app_id) !== delivery.appId) fail(502, 'GitHub app mismatch')
+    if (membership.suspended_at !== null && typeof membership.suspended_at !== 'string') fail(502, 'Invalid GitHub installation state')
+    if (githubId(membership.id) !== delivery.installationId || membership.suspended_at !== null) return denied
+    if (!token) {
+      const issued = await request(`/app/installations/${delivery.installationId}/access_tokens`, jwt, 'POST')
+      token = string(issued?.token)
+      if (!token) fail(502, 'Missing GitHub installation token')
     }
-    if (result.repositories.length < 100) break
-    if (page === 20) fail(502, 'GitHub repository pagination limit exceeded')
+    const repository = await request(path, token, 'GET', true)
+    if (!repository || githubId(repository.id) !== repositoryId || string(repository.full_name).toLowerCase() !== repositoryFullName.toLowerCase()) return denied
+    return { repositoryId, repositoryFullName, accessible: true }
   }
-  if (delivery.kind === 'installation' || delivery.kind === 'access') return { ...common, kind: 'access', installationState: 'active', repositories }
   if (delivery.kind === 'repositories') {
-    return { ...common, kind: 'access', installationState: 'active', repositories: delivery.repositoryIds.map((repositoryId, index) => {
-      const repositoryFullName = delivery.repositoryFullNames[index]!
-      const found = repositories.find(repository => repository.repositoryId === repositoryId && repository.repositoryFullName.toLowerCase() === repositoryFullName.toLowerCase())
-      return found ?? { repositoryId, repositoryFullName, accessible: false }
-    }) }
+    const repositories = []
+    for (const [index, repositoryId] of delivery.repositoryIds.entries()) {
+      repositories.push(await repositoryAccess(repositoryId, delivery.repositoryFullNames[index]!))
+    }
+    return { ...common, kind: 'access', installationState: 'active', repositories }
   }
-  const repository = repositories.find(value => value.repositoryId === delivery.repositoryId && value.repositoryFullName.toLowerCase() === delivery.repositoryFullName.toLowerCase())
-  if (!repository) return { ...common, retryable: true, kind: 'access', installationState: 'active', repositories: [{ repositoryId: delivery.repositoryId, repositoryFullName: delivery.repositoryFullName, accessible: false }] }
-  const parts = repository.repositoryFullName.split('/')
-  if (parts.length !== 2 || parts.some(part => !/^[\w.-]+$/.test(part) || part === '.' || part === '..')) fail(502, 'Invalid GitHub repository name')
-  const path = `/repos/${parts.map(encodeURIComponent).join('/')}/${delivery.itemType === 'issue' ? 'issues' : 'pulls'}/${delivery.number}`
-  const current = await request(path, token)
+  const repository = await repositoryAccess(delivery.repositoryId, delivery.repositoryFullName)
+  if (!repository.accessible) return { ...common, retryable: true, kind: 'access', installationState: 'active', repositories: [repository] }
+  const path = `/repos/${repository.repositoryFullName.split('/').map(encodeURIComponent).join('/')}/${delivery.itemType === 'issue' ? 'issues' : 'pulls'}/${delivery.number}`
+  const current = await request(path, string(token))
   const item = parseGithubItem(common, delivery.action, delivery.itemType, { id: repository.repositoryId, full_name: repository.repositoryFullName }, current)
   if (!item || item.itemId !== delivery.itemId || item.number !== delivery.number) fail(409, 'GitHub item identity changed')
   signal.throwIfAborted()

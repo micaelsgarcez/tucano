@@ -60,7 +60,7 @@ The handler validates the raw-body HMAC and app identity before querying GitHub.
 
 Canonical reads handle delayed events and edits in the same second. Closing an unmerged pull request maps to the cancelled category. Merge maps to completed. An applied delivery is idempotent. An ignored item can be retried after its access returns. Reusing a delivery ID with different bytes is rejected.
 
-Reconciliation has a total eight-second deadline, a queue limit of 32, and a maximum of 20 repository pages. API errors, timeouts, and exceeded bounds return non-success responses without committing partial item state. Operators must inspect failures and request redelivery. The module does not run a background catch-up job.
+Reconciliation checks only repositories named by the event, using the App-authenticated repository installation endpoint and current repository identity. It has a total eight-second deadline and a queue limit of 32. Large repository-change batches can exceed the deadline. API errors, timeouts, and exceeded bounds return non-success responses without committing partial item state. Operators must inspect failures and request redelivery. The module does not run a background catch-up job.
 
 ## Maintenance checks
 

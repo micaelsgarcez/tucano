@@ -18,6 +18,9 @@ let repositories: { id: number; full_name: string }[]
 let current: ReturnType<typeof item>
 let apiError: number, itemRequests: number, apiRequests: number
 let holdItem: (() => Promise<void>) | undefined
+let membership: { id: number; app_id: number; suspended_at: string | null }
+let metadata: { id: number; full_name: string } | undefined
+let requestedPaths: string[]
 function item(fields: Record<string, unknown> = {}) {
   return { id: 40, number: 1, title: 'Current title', body: 'Current body', html_url: 'https://github.com/owner/repo/issues/1', state: 'open', merged: false, labels: [{ name: 'sync' }], updated_at: '2026-11-10T12:00:10Z', ...fields }
 }
@@ -40,6 +43,7 @@ async function deliver(value: unknown = payload(), id = 'delivery', event = 'iss
 const tasks = () => store.list(store.ownerPrincipal()).items
 beforeEach(async () => {
   installationState = 'active'; repositories = [{ id: 30, full_name: 'owner/repo' }]
+  membership = { id: 20, app_id: 10, suspended_at: null }; metadata = undefined; requestedPaths = []
   current = item(); apiError = 0; itemRequests = 0; apiRequests = 0; holdItem = undefined
   dir = mkdtempSync(join(tmpdir(), 'tasks-github-api-'))
   store = new TaskStore(join(dir, 'tasks.sqlite'))
@@ -56,9 +60,10 @@ beforeEach(async () => {
     void (async () => {
       apiRequests++
       const path = new URL(req.url!, 'http://localhost').pathname
+      requestedPaths.push(path)
       res.setHeader('Content-Type', 'application/json')
       if (apiError) { res.writeHead(apiError); res.end('{}'); return }
-      if (path.startsWith('/app/')) {
+      if (path.startsWith('/app/') || path.endsWith('/installation')) {
         const jwt = req.headers.authorization?.slice(7).split('.') ?? []
         expect(jwt).toHaveLength(3)
         expect(verify('RSA-SHA256', Buffer.from(`${jwt[0]}.${jwt[1]}`), publicKey, Buffer.from(jwt[2]!, 'base64url'))).toBe(true)
@@ -70,10 +75,14 @@ beforeEach(async () => {
         res.end(JSON.stringify({ id: 20, app_id: 10, suspended_at: installationState === 'suspended' ? '2026-11-10T12:00:00Z' : null }))
       } else if (path === '/app/installations/20/access_tokens') {
         expect(req.method).toBe('POST'); res.end(JSON.stringify({ token: 'installation-token' }))
-      } else if (path === '/installation/repositories') {
-        res.setHeader('Link', '<https://untrusted.invalid/next>; rel="next"')
-        const page = Number(new URL(req.url!, 'http://localhost').searchParams.get('page'))
-        res.end(JSON.stringify({ repositories: repositories.slice((page - 1) * 100, page * 100) }))
+      } else if (/^\/repos\/[^/]+\/[^/]+\/installation$/.test(path)) {
+        const found = repositories.find(repository => `/repos/${repository.full_name}/installation` === path)
+        res.statusCode = found ? 200 : 404
+        res.end(JSON.stringify(found ? membership : {}))
+      } else if (/^\/repos\/[^/]+\/[^/]+$/.test(path)) {
+        const found = metadata ?? repositories.find(repository => `/repos/${repository.full_name}` === path)
+        res.statusCode = found ? 200 : 404
+        res.end(JSON.stringify(found ?? {}))
       } else if (path === '/repos/owner/repo/issues/1' || path === '/repos/owner/repo/pulls/2' || path === '/repos/owner/newrepo/issues/1') {
         itemRequests++
         const snapshot = current
@@ -167,9 +176,10 @@ it('fails upstream errors without acknowledging or recording success, allowing r
   apiError = 0
   expect(await (await deliver()).json()).toEqual({ status: 'applied' })
 })
-it('finds repository access on later pages and refuses changed item identities', async () => {
-  repositories = [...Array.from({ length: 100 }, (_, i) => ({ id: 100 + i, full_name: `owner/repo${i}` })), ...repositories]
+it('checks one repository without enumerating thousands of unrelated repositories and refuses changed item identities', async () => {
+  repositories = [...Array.from({ length: 2_000 }, (_, i) => ({ id: 100 + i, full_name: `owner/repo${i}` })), ...repositories]
   expect((await deliver()).status).toBe(200)
+  expect(requestedPaths).toEqual(['/app/installations/20', '/repos/owner/repo/installation', '/app/installations/20/access_tokens', '/repos/owner/repo', '/repos/owner/repo/issues/1'])
   current = item({ id: 999, title: 'Wrong identity' })
   expect((await deliver(payload(), 'identity')).status).toBe(409)
   expect(tasks()[0]?.title).toBe('Current title')
@@ -195,13 +205,50 @@ it('aborts before any API request when its total deadline has expired', async ()
   expect(apiRequests).toBe(0)
 })
 
-it('bounds pagination and never treats a truncated access list as a removal', async () => {
-  repositories = Array.from({ length: 2_000 }, (_, i) => ({ id: 100 + i, full_name: `owner/repo${i}` }))
-  expect((await deliver()).status).toBe(502)
-  expect(apiRequests).toBe(22); expect(itemRequests).toBe(0)
+it('does not accept a public repository outside the installation even if its metadata is readable', async () => {
+  repositories = []
+  metadata = { id: 30, full_name: 'owner/repo' }
+  expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
   expect(tasks()[0]?.title).toBe('Imported title')
-  repositories = [{ id: 30, full_name: 'owner/repo' }]
+  expect(requestedPaths).toEqual(['/app/installations/20', '/repos/owner/repo/installation'])
+  repositories = [metadata]
   expect(await (await deliver()).json()).toEqual({ status: 'applied' })
+})
+it('denies membership belonging to another installation and permits retry after access returns', async () => {
+  membership.id = 21
+  expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
+  expect(itemRequests).toBe(0)
+  membership.id = 20
+  expect(await (await deliver()).json()).toEqual({ status: 'applied' })
+})
+it('rejects membership for another app and denies suspended repository membership', async () => {
+  membership.app_id = 11
+  expect((await deliver()).status).toBe(502)
+  membership.app_id = 10; membership.suspended_at = '2026-11-10T12:00:00Z'
+  expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
+  expect(itemRequests).toBe(0)
+  membership.suspended_at = null
+  expect(await (await deliver()).json()).toEqual({ status: 'applied' })
+})
+it('denies recreated repositories and changed canonical names before fetching their items', async () => {
+  metadata = { id: 99, full_name: 'owner/repo' }
+  expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
+  metadata = { id: 30, full_name: 'owner/other' }
+  expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
+  expect(itemRequests).toBe(0); expect(tasks()[0]?.title).toBe('Imported title')
+  metadata = undefined
+  expect(await (await deliver()).json()).toEqual({ status: 'applied' })
+})
+it('reads only installation state for lifecycle notifications', async () => {
+  expect((await deliver({ action: 'created', installation: { id: 20 } }, 'created', 'installation')).status).toBe(200)
+  expect(requestedPaths).toEqual(['/app/installations/20'])
+})
+it('rejects invalid repository URL segments before requesting repository access', async () => {
+  for (const repository of ['owner/..', 'owner/repo?x', '../repo', 'owner/repo/other']) {
+    const value = { ...payload(), repository: { id: 30, full_name: repository } }
+    expect((await deliver(value, repository)).status).toBe(502)
+  }
+  expect(requestedPaths).toEqual(Array(4).fill('/app/installations/20'))
 })
 it('returns a deadline failure and never writes an API read that finishes afterward', async () => {
   const timeout = AbortSignal.timeout.bind(AbortSignal)
@@ -214,7 +261,16 @@ it('returns a deadline failure and never writes an API read that finishes afterw
 
 it('reconciles mixed repository access and permits a configured repository missing from the imported membership list', async () => {
   repositories = [{ id: 31, full_name: 'owner/newrepo' }]
+  const apply = vi.spyOn(store, 'applyGithubDelivery')
   expect((await deliver({ action: 'added', installation: { id: 20 }, repositories_added: [{ id: 30, full_name: 'owner/repo' }, ...repositories] }, 'mixed', 'installation_repositories')).status).toBe(200)
+  const expected = { kind: 'access', installationState: 'active', repositories: [
+    { repositoryId: '30', repositoryFullName: 'owner/repo', accessible: false },
+    { repositoryId: '31', repositoryFullName: 'owner/newrepo', accessible: true },
+  ] }
+  expect(apply).toHaveBeenLastCalledWith(expect.objectContaining(expected))
+  expect(requestedPaths).toEqual(['/app/installations/20', '/repos/owner/repo/installation', '/repos/owner/newrepo/installation', '/app/installations/20/access_tokens', '/repos/owner/newrepo'])
+  expect((await deliver({ action: 'removed', installation: { id: 20 }, repositories_removed: [{ id: 30, full_name: 'owner/repo' }, ...repositories] }, 'stale-mixed-remove', 'installation_repositories')).status).toBe(200)
+  expect(apply).toHaveBeenLastCalledWith(expect.objectContaining(expected))
   expect(await (await deliver()).json()).toEqual({ status: 'ignored' })
   current = item({ id: 41, title: 'New repository issue', html_url: 'https://github.com/owner/newrepo/issues/1' })
   const value = { ...payload(), repository: repositories[0], issue: current }
