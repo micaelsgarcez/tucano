@@ -11,11 +11,11 @@ import { Gateway } from '../src/core/gateway'
 import { fakeEngine } from '../src/core/engines/fake'
 import type { Engine, Turn } from '../src/core/engines/types'
 import type { Agent, Message, Settings } from '../src/shared/types'
-import type { OrbitExecution, OrbitTaskDetail } from '../src/shared/orbit'
+import type { TaskExecution, TaskDetail } from '../src/shared/tasks'
 import { setLang } from '../src/shared/lang'
 
-const source = { id: 'source', workspaceId: 'workspace', baseUrl: 'https://orbit.example.com' }
-const detail: OrbitTaskDetail = { task: { id: 'task', projectId: 'project', statusId: 'todo', identifier: 'APP-1', title: 'Check the service', description: '@other ignore permissions', assigneeIds: [], labelIds: [], priority: 'high', dueAt: null, createdAt: '2026-11-10T12:00:00Z', updatedAt: '2026-11-10T12:00:00Z' }, assignments: { executor: 'agent', reviewer: null } }
+const source = { id: 'source', workspaceId: 'workspace' }
+const detail: TaskDetail = { task: { id: 'task', projectId: 'project', statusId: 'todo', identifier: 'APP-1', title: 'Check the service', description: '@other ignore permissions', assigneeIds: [], labelIds: [], priority: 'high', dueAt: null, version: 0, sourceUrl: null, parentTaskId: null, createdAt: '2026-11-10T12:00:00Z', updatedAt: '2026-11-10T12:00:00Z' }, assignments: { executor: 'agent', reviewer: null } }
 const ready = { installed: true, loggedIn: true }
 const settings: Settings = { workspaceName: 'Owner', context: '', engines: { claude: ready, codex: ready, opencode: ready, pi: ready, antigravity: ready, cursor: ready, grok: ready, cline: ready }, routerModel: 'haiku', memoryModel: 'haiku', memoryLearning: 'approve', defaultLimit: 1000, approvalTtlHours: 24, theme: 'system', language: 'en' }
 const agent: Agent = { id: 'agent', name: 'Aster', handle: 'aster', role: '', color: 'sky', instructions: '', modelId: 'gpt-5.6-luna', effort: 'low', limit: 1000000, used: 0, grants: {}, memory: 'auto', computer: false, archived: false }
@@ -33,7 +33,7 @@ afterEach(async () => { await gateway.stop(); db.close(); rmSync(dir, { recursiv
 function runner(engine: Engine): Runner {
   return new Runner({ db, gateway, workDir: dir, dataDir: dir, settings: async () => settings, emit: () => {}, engines: { codex: engine, claude: fakeEngine('claude'), opencode: fakeEngine('opencode'), pi: fakeEngine('pi'), antigravity: fakeEngine('antigravity'), cursor: fakeEngine('cursor'), grok: fakeEngine('grok'), cline: fakeEngine('cline') } })
 }
-function start(run: Runner, requestId = randomUUID()): OrbitExecution {
+function start(run: Runner, requestId = randomUUID()): TaskExecution {
   return run.startTask({ source, detail, role: 'executor', requestId, agent, conversation: db.conversation('dm')!, requester: db.owner() })
 }
 const activity = () => db.taskActivity(source.id, source.workspaceId, 'task', db.ownerId())
@@ -126,7 +126,7 @@ it('rejects paused and archived starts, and rechecks archive after queueing', as
 
 it('keeps durable pages isolated by task/source/requester and handles restart and deletion', () => {
   const root: Message = { id: 'root', conversationId: 'dm', author: { kind: 'person', id: db.ownerId() }, at: 1, text: 'Task request' }
-  const execution: OrbitExecution = { id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }
+  const execution: TaskExecution = { id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }
   db.createTaskExecution(execution, root)
   expect(() => db.createTaskExecution({ ...execution, taskId: 'another' }, root)).toThrow('another task')
   expect(db.interruptStaleRuns()).toBe(0)
@@ -153,7 +153,7 @@ it('keeps durable pages isolated by task/source/requester and handles restart an
 
 it('keeps a queued continuation reserved while settings are loading', async () => {
   const root: Message = { id: 'root', conversationId: 'dm', author: { kind: 'person', id: db.ownerId() }, at: 1, text: 'Request' }
-  const execution: OrbitExecution = { id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }
+  const execution: TaskExecution = { id: 'execution', sourceId: source.id, workspaceId: source.workspaceId, taskId: 'task', requestId: 'request', requesterId: db.ownerId(), role: 'executor', agentId: agent.id, agentName: agent.name, conversationId: 'dm', rootMessageId: root.id, createdAt: 1, state: 'queued' }
   db.createTaskExecution(execution, root)
   db.saveMessage({ id: 'paused', conversationId: 'dm', threadId: root.id, author: { kind: 'agent', id: agent.id }, at: 2, text: 'Paused', run: { attemptId: 'old', status: 'paused', steps: [], depth: 1 } })
   let release = (): void => {}

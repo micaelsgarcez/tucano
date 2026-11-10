@@ -6,6 +6,8 @@ import { configDefaults, defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     exclude: [...configDefaults.exclude, 'site/**'],
+    // Limit disk contention between concurrent SQLite and Git fixtures on Windows.
+    maxWorkers: process.platform === 'win32' ? 2 : undefined,
     testTimeout: process.platform === 'win32' ? 30_000 : 5_000,
     hookTimeout: process.platform === 'win32' ? 30_000 : 10_000
   }

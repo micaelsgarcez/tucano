@@ -1,6 +1,7 @@
 // Renderer state. Everything except the current view comes from the core and
 // is kept in sync by its events; actions go to the core over RPC.
 import { useCallback, useRef, useSyncExternalStore } from 'react'
+import { taskIdFromHash } from '../../shared/links'
 import { L, setLang } from '../../shared/lang'
 import type { Answer } from '../../shared/questions'
 import type { CoreEvent, Method, Params } from '../../shared/rpc'
@@ -70,7 +71,7 @@ export type View =
   | { kind: 'usage' }
   | { kind: 'connectors' }
   | { kind: 'memory' }
-  | { kind: 'orbit' }
+  | { kind: 'tasks'; taskId?: string }
   | { kind: 'wiki'; title?: string; edit?: boolean; tab?: 'pages' | 'pending' | 'sources' | 'review'; source?: string } // the wiki's home (a tab), a page (being edited), or a source
   | { kind: 'routines' }
   | { kind: 'skills' }
@@ -587,13 +588,22 @@ function apply(e: CoreEvent): void {
   if (e.type === 'browser') showFrame(e.view.agentId, e.view.frame)
 }
 
+function navigateTaskHash(): void {
+  const taskId = taskIdFromHash(window.location.hash)
+  if (taskId) navigate({ kind: 'tasks', taskId })
+  else if (window.location.hash === '#tasks' || (!window.location.hash && state.view?.kind === 'tasks')) navigate({ kind: 'tasks' })
+}
+
 export async function start(): Promise<void> {
+  window.removeEventListener('hashchange', navigateTaskHash)
+  window.addEventListener('hashchange', navigateTaskHash)
   window.tucano.onNavigate((id, thread) => {
     navigate({ kind: 'conversation', id })
     if (thread) openThread(thread)
   })
   window.tucano.onNavigatePage?.((page) => navigate({ kind: page }))
   window.tucano.onCoreDown?.(() => {
+    window.removeEventListener('hashchange', navigateTaskHash)
     disconnect()
     set((s) => ({ ...s, coreDown: true }))
   })
@@ -610,7 +620,8 @@ export async function start(): Promise<void> {
   for (const b of snap.browsers) showFrame(b.agentId, b.frame)
   set((s) => {
     const first = snap.conversations.find((c) => c.kind === 'channel') ?? snap.conversations[0]
-    const view = s.view ?? (first ? { kind: 'conversation' as const, id: first.id } : { kind: 'new-agent' as const })
+    const taskId = taskIdFromHash(window.location?.hash ?? '')
+    const view = s.view ?? (taskId || window.location?.hash === '#tasks' ? { kind: 'tasks' as const, ...(taskId ? { taskId } : {}) } : null) ?? (first ? { kind: 'conversation' as const, id: first.id } : { kind: 'new-agent' as const })
     return {
       ...withSettings({ ...s, you: snap.you, people: snap.people }, snap.settings),
       ready: true,
@@ -739,7 +750,11 @@ function fire<M extends Method>(failed: string, method: M, ...params: Params<M> 
 
 export const setNav = (navOpen: boolean): void => set((s) => ({ ...s, navOpen }))
 
-export const navigate = (view: View): void =>
+export const navigate = (view: View): void => {
+  const hash = view.kind === 'tasks' ? (view.taskId ? `#tasks/${encodeURIComponent(view.taskId)}` : '#tasks') : ''
+  if (window.location?.hash !== hash && (view.kind === 'tasks' || window.location?.hash.startsWith('#tasks'))) {
+    window.history.replaceState(null, '', hash || window.location.pathname + window.location.search)
+  }
   set((s) => ({
     ...s,
     view,
@@ -748,6 +763,7 @@ export const navigate = (view: View): void =>
     conversations:
       view.kind === 'conversation' ? s.conversations.map((c) => (c.id === view.id ? { ...c, unread: 0 } : c)) : s.conversations
   }))
+}
 
 export function updateSettings(patch: Partial<Omit<Settings, 'engines'>>): void {
   // optimistic, so typing stays instant; the owner's name given here (the introduction) is the name asked once

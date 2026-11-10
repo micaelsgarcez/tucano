@@ -1,4 +1,4 @@
-import { OrbitPage } from './components/Orbit'
+import { TasksPage } from './components/Tasks'
 import { useEffect, type ReactNode } from 'react'
 import { L } from '../../shared/lang'
 import { getState, navigate, openDialog, setNav, useStore } from './store'
@@ -107,7 +107,7 @@ export function App(): ReactNode {
         {view.kind === 'connectors' && <ConnectorsPage />}
         {view.kind === 'memory' && <MemoryPage />}
         {view.kind === 'wiki' && <WikiView />}
-        {view.kind === 'orbit' && <OrbitPage />}
+        {view.kind === 'tasks' && <TasksPage />}
         {view.kind === 'routines' && <RoutinesPage />}
         {view.kind === 'skills' && <SkillsPage />}
         {view.kind === 'report' && <ReportPage />}

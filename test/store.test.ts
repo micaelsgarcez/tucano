@@ -6,6 +6,8 @@ import type { Conversation, Message } from '../src/shared/types'
 type Store = typeof import('../src/renderer/src/store')
 let store: Store
 let emit: (e: CoreEvent) => void
+const events = new Map<string, (e: unknown) => void>()
+const location = { hash: '#tasks/off-page-task', pathname: '/', search: '' }
 const asked: { method: string; params: unknown }[] = []
 
 const conv = (id: string): Conversation => ({ id, kind: 'channel', name: id, members: [], threads: true }) as Conversation
@@ -31,14 +33,22 @@ beforeAll(async () => {
     }
   }
   const win: Record<string, unknown> = {
-    addEventListener: (_: string, l: (e: unknown) => void) => (listener = l),
-    removeEventListener: () => {},
+    location,
+    history: { replaceState: (_: unknown, __: string, url: string) => { location.hash = url.startsWith('#') ? url : '' } },
+    addEventListener: (type: string, l: (e: unknown) => void) => { events.set(type, l); if (type === 'message') listener = l },
+    removeEventListener: (type: string) => { events.delete(type) },
     tucano: { onNavigate: () => {}, viewing: () => {}, connect: () => queueMicrotask(() => listener!({ source: win, data: 'core:port', ports: [port] })) }
   }
   ;(globalThis as Record<string, unknown>).window = win
   store = await import('../src/renderer/src/store')
   await store.start()
   emit = (event) => port.onmessage!({ data: { event } })
+})
+
+it('opens the linked task after the authenticated snapshot arrives', () => {
+  expect(store.getState().ready).toBe(true)
+  expect(store.getState().view).toEqual({ kind: 'tasks', taskId: 'off-page-task' })
+  store.navigate({ kind: 'conversation', id: 'c1' })
 })
 
 describe("the window's messages", () => {
@@ -98,4 +108,19 @@ describe("the window's messages", () => {
     expect(store.messagesIn(store.getState(), 'c1')).toEqual([])
     expect(store.messagesIn(store.getState(), 'c2').map((m) => m.id)).toEqual(['x1'])
   })
+})
+
+it('synchronizes task selection, board and same-tab task links', () => {
+  store.navigate({ kind: 'tasks', taskId: 'selected-task' })
+  expect(location.hash).toBe('#tasks/selected-task')
+  store.navigate({ kind: 'tasks' })
+  expect(location.hash).toBe('#tasks')
+  location.hash = '#tasks/another-task'
+  events.get('hashchange')!(new Event('hashchange'))
+  expect(store.getState().view).toEqual({ kind: 'tasks', taskId: 'another-task' })
+  location.hash = '#tasks'
+  events.get('hashchange')!(new Event('hashchange'))
+  expect(store.getState().view).toEqual({ kind: 'tasks' })
+  store.navigate({ kind: 'conversation', id: 'c2' })
+  expect(location.hash).toBe('')
 })
