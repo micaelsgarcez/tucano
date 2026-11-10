@@ -10933,7 +10933,6 @@ button.agent-card__now:hover {
 .knowledge__markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
 .knowledge__markdown td, .knowledge__markdown th { padding: 8px; border: 1px solid var(--border); }
 
-/* Orbit keeps task state; this board adds the team's agent responsibilities. */
 .orbit-workspace { display: flex; flex-direction: column; min-height: 0; flex: 1; padding: 0 12px 12px; }
 .orbit-workspace > [role="alert"], .orbit-workspace > [role="status"] { padding: 0 20px; }
 .orbit-connection { overflow: auto; flex-shrink: 0; max-height: 65%; padding: 12px 20px; }

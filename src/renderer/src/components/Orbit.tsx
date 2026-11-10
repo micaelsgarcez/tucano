@@ -89,7 +89,7 @@ function Priority({ priority }: { priority: OrbitTask['priority'] }): ReactNode 
   return <span className={`orbit-priority is-${priority}`} aria-label={names[priority]} title={names[priority]}>{priority === 'urgent' ? '!' : priority === 'none' ? '—' : <span aria-hidden="true">{[1, 2, 3].map(level => <i key={level} style={{ height: 3 + level * 3, opacity: level <= ({ low: 1, medium: 2, high: 3 }[priority]) ? 1 : .2 }} />)}</span>}</span>
 }
 function ProjectChip({ project }: { project?: OrbitProject }): ReactNode {
-  return <span className="orbit-project-chip"><i style={{ background: project?.color }} />{project?.name ?? L('Projeto indisponível', 'Unavailable project')}</span>
+  return <span className="orbit-project-chip"><i style={{ backgroundColor: project?.color }} />{project?.name ?? L('Projeto indisponível', 'Unavailable project')}</span>
 }
 function TaskMarkdown({ text }: { text: string }): ReactNode {
   return <div className="md orbit-markdown"><Markdown urlTransform={safeUrl} remarkPlugins={[remarkGfm]} components={{ img: ({ alt }) => <span>{alt}</span> }}>{text}</Markdown></div>
@@ -166,7 +166,7 @@ function OrbitTasks({ source, data, projectId, onProject }: { source: OrbitSourc
           return <button className="orbit-task" key={task.id} ref={node => { if (node) cards.current.set(task.id, node); else cards.current.delete(task.id) }} onClick={() => { lastSelected.current = task.id; setSelected(task.id) }}>
             <span className="orbit-card-head"><span><StatusIcon status={status} />{task.identifier}</span><span className="orbit-card-people">{task.assigneeIds.map(id => { const name = data.members.find(member => member.id === id)?.name ?? L('Responsável indisponível', 'Unavailable assignee'); return <span className="orbit-human-avatar" key={id} title={name} aria-label={name}>{name.slice(0, 1)}</span> })}<Priority priority={task.priority} /></span></span>
             <strong>{task.title}</strong>
-            {!!task.labelIds.length && <span className="orbit-labels">{task.labelIds.map(id => { const label = data.labels.find(label => label.id === id); return label && <span className="orbit-label" key={id}><i style={{ background: label.color }} />{label.name}</span> })}</span>}
+            {!!task.labelIds.length && <span className="orbit-labels">{task.labelIds.map(id => { const label = data.labels.find(label => label.id === id); return label && <span className="orbit-label" key={id}><i style={{ backgroundColor: label.color }} />{label.name}</span> })}</span>}
             <span className="orbit-card-footer"><ProjectChip project={project} />{due && <time dateTime={task.dueAt ?? undefined} title={dateText(task.dueAt ?? '')} className={overdue ? 'is-overdue' : ''}>▦ {due.toLocaleDateString(locale(), { month: 'short', day: 'numeric' })}</time>}</span>
             <span className="orbit-card-agents">{(['executor', 'reviewer'] satisfies OrbitAgentRole[]).map(role => <span key={role}><span>{roleName(role)}</span><b>{agentName(agents, assignments[role])}</b></span>)}</span>
           </button>
@@ -312,7 +312,7 @@ function OrbitDetail({ source, taskId, data, onBack, onChange }: { source: Orbit
         <p><Priority priority={task.priority} /> {({ urgent: L('Urgente', 'Urgent'), high: L('Prioridade alta', 'High priority'), medium: L('Prioridade média', 'Medium priority'), low: L('Prioridade baixa', 'Low priority'), none: L('Sem prioridade', 'No priority') })[task.priority]}</p>
         <h3>{L('Responsáveis humanos no Orbit', 'Human assignees in Orbit')}</h3><p>{task.assigneeIds.map(id => data.members.find(member => member.id === id)?.name ?? L('Responsável indisponível', 'Unavailable assignee')).join(', ') || L('Nenhum', 'None')}</p>
         <h3>{L('Projeto', 'Project')}</h3><ProjectChip project={project} />
-        <h3>{L('Etiquetas', 'Labels')}</h3><div className="orbit-labels">{task.labelIds.length ? task.labelIds.map(id => { const label = data.labels.find(label => label.id === id); return label && <span className="orbit-label" key={id}><i style={{ background: label.color }} />{label.name}</span> }) : L('Nenhuma', 'None')}</div>
+        <h3>{L('Etiquetas', 'Labels')}</h3><div className="orbit-labels">{task.labelIds.length ? task.labelIds.map(id => { const label = data.labels.find(label => label.id === id); return label && <span className="orbit-label" key={id}><i style={{ backgroundColor: label.color }} />{label.name}</span> }) : L('Nenhuma', 'None')}</div>
         <h3>{L('Prazo', 'Due date')}</h3><p>{task.dueAt ? <time dateTime={task.dueAt}>{dateText(task.dueAt)}</time> : L('Sem prazo', 'No due date')}</p>
         <h3>{L('Agentes do Tucano', 'Tucano agents')}</h3>
         {(['executor', 'reviewer'] satisfies OrbitAgentRole[]).map(role => {

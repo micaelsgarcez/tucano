@@ -514,7 +514,7 @@ export class Runner {
     // Answered for the person it was asked (by an admin, whoever covers for them, the requester past
     // the deadline): the agent is told so in so many words.
     let onBehalf: { agent: string; task: string } | undefined
-    if (reading.length) await Promise.all(reading)
+    const readFiles = reading.length ? this.taskJob(() => Promise.all(reading), { conversationId: conv.id, threadId: replyIn }) : undefined
     if (asked) {
       if (q?.state === 'open') {
         db.saveQuestion({ ...q, state: 'answered', answeredBy: writer.id, answeredAt: Date.now() })
@@ -536,6 +536,8 @@ export class Runner {
           )
         }
     }
+
+    if (readFiles) await readFiles()
 
     if (members.length === 0) {
       this.post(conv.id, replyIn, L('Ninguém está neste canal ainda. Adicione agentes na página de cada um (Canais) e mande de novo.', "No one is in this channel yet. Add agents on each one's page (Channels) and send it again."))
