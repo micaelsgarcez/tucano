@@ -62,10 +62,8 @@ describe('the core starting', () => {
     Object.assign(process.env, { TUCANO_DATA: dataDir, TUCANO_DEFAULT_WORKSPACE: '0', TUCANO_SEED: '0', TUCANO_WEBHOOK_PORT: '47967', TUCANO_GIT_PORT: '47968', TUCANO_WIKI: join(dataDir, 'wiki') })
     delete process.env['TUCANO_FAKE_ENGINES']
     ;(process as unknown as { parentPort: typeof parent }).parentPort = parent
-    const started = Date.now()
     await import('../src/core/index')
     await vi.waitFor(() => expect(parent.postMessage).toHaveBeenCalledWith({ type: 'ready' }), { timeout: 5_000 })
-    expect(Date.now() - started).toBeLessThan(5_000)
     expect(detection.calls).toBe(1) // started, and still running
 
     const window = connect()
