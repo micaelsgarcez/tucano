@@ -21,7 +21,8 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Runner capacity
-        run: node -e 'const os = require("node:os"); console.log({cpus: os.cpus().length, available: os.availableParallelism(), memory: os.totalmem()})'
+        run: |
+          node -e 'const os = require("node:os"); console.log({cpus: os.cpus().length, available: os.availableParallelism(), memory: os.totalmem()})'
       - name: Isolated unread test
         run: npx vitest run test/team-stress.test.ts -t 'is main.s rule exactly' --reporter=verbose
       - name: Full suite
