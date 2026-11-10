@@ -79,6 +79,10 @@ function personError(by: Person, target: Pick<Person, 'id' | 'role'>): string {
 // What each RPC method needs at the door.
 export type Need = 'anyone' | 'admin' | 'owner' | 'target'
 export const NEEDS: Record<Method, Need> = {
+  orbitBoardData: 'owner',
+  orbitComments: 'owner',
+  orbitActivity: 'owner',
+  orbitStart: 'owner',
   orbitSource: 'owner',
   orbitSaveSource: 'owner',
   orbitProjects: 'owner',

@@ -1339,6 +1339,15 @@ const emitPeople = (): void => emit({ type: 'people', people: db.people(), forme
 const orbit = new Orbit(db, secrets)
 
 const api: Handlers = {
+  orbitBoardData: ({ sourceId }) => orbit.boardData(sourceId),
+  orbitComments: ({ sourceId, taskId, cursor }) => orbit.comments(sourceId, taskId, cursor),
+  orbitActivity: ({ sourceId, taskId, cursor }, ctx) => orbit.activity(sourceId, taskId, ctx.person, cursor),
+  orbitStart: (p, ctx) => orbit.start(p, (source, detail, agent) => {
+    const conversationId = api.openDm({ agentId: agent.id }, ctx)
+    const conversation = db.conversation(conversationId)
+    if (!conversation) throw new Error(L('Conversa indisponível.', 'Conversation unavailable.'))
+    return runner.startTask({ source, detail, agent, conversation, requester: ctx.person, role: p.role, requestId: p.requestId })
+  }),
   orbitSource: () => orbit.source(),
   orbitSaveSource: (p) => orbit.save(p),
   orbitProjects: ({ sourceId }) => orbit.projects(sourceId),

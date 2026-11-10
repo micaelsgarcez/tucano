@@ -7,11 +7,15 @@ import { L } from './lang'
 import type { Method } from './rpc'
 
 export const SHAPES: Record<Method, Record<string, string>> = {
+  orbitBoardData: { sourceId: 's' },
+  orbitComments: { sourceId: 's', taskId: 's', cursor: 's?' },
+  orbitActivity: { sourceId: 's', taskId: 's', cursor: 's?' },
+  orbitStart: { sourceId: 's', taskId: 's', role: '[executor,reviewer]', requestId: 's' },
   orbitSource: {},
   orbitSaveSource: { baseUrl: 's', workspaceId: 's', token: 's' },
   orbitProjects: { sourceId: 's' },
   orbitProjectData: { sourceId: 's', projectId: 's' },
-  orbitTasks: { sourceId: 's', projectId: 's', cursor: 's?' },
+  orbitTasks: { sourceId: 's', projectId: 's|null', cursor: 's?' },
   orbitTask: { sourceId: 's', taskId: 's' },
   orbitAssignAgent: { sourceId: 's', taskId: 's', role: '[executor,reviewer]', agentId: 's|null' },
   knowledgeSource: {},
