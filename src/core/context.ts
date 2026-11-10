@@ -35,7 +35,7 @@ export type PromptOpts = {
   wiki?: { pages: number; kinds: string[] } // the wiki it may read
   connectors?: boolean // it has connector tools (Slack, Databricks…)
   people?: Person[] // the Tucano's people; with more than one, the agent is told who they are
-  github?: GitHubAccess // a GitHub connector it has access to: how it publishes, and what waits for the person
+  github?: GitHubAccess[] // each GitHub connection's access and publishing rules
 }
 
 // What an agent may do on GitHub through a connector, as this turn exposes it: the grant, the tools
@@ -104,7 +104,7 @@ export function systemPrompt(opts: PromptOpts): string {
       ]
         .filter(Boolean)
         .join('\n'),
-    opts.github && githubSection(me, opts.github, hasComputer ? (macFolder ? 'mac' : computerOff ? undefined : 'linux') : undefined),
+    opts.github?.map((gh) => githubSection(me, gh, hasComputer ? (macFolder ? 'mac' : computerOff ? undefined : 'linux') : undefined)).join('\n\n'),
     browser && browserSection(me),
     apps?.length && appsSection(me, apps),
     builderGuide,

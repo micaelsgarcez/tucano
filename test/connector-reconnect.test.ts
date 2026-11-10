@@ -68,9 +68,11 @@ describe('a remote connector whose server forgets the session', () => {
   let server: Server
   let url: string
   const sessions = new Map<string, StreamableHTTPServerTransport>()
+  const authorizations: unknown[] = []
 
   beforeEach(async () => {
     sessions.clear()
+    authorizations.length = 0
     server = createServer((req: IncomingMessage, res: ServerResponse) => {
       void (async () => {
         const sid = req.headers['mcp-session-id'] as string | undefined
@@ -83,7 +85,10 @@ describe('a remote connector whose server forgets the session', () => {
           const t = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), enableJsonResponse: true, onsessioninitialized: (s) => void sessions.set(s, t) })
           const mcp = new McpServer({ name: 'r', version: '1' }, { capabilities: { tools: {} } })
           mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
-          mcp.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: 'text', text: 'pong' }] }))
+          mcp.setRequestHandler(CallToolRequestSchema, async (_request, extra) => {
+            authorizations.push(extra.requestInfo?.headers['authorization'])
+            return { content: [{ type: 'text', text: 'pong' }] }
+          })
           await mcp.connect(t)
           transport = t
         }
@@ -96,6 +101,34 @@ describe('a remote connector whose server forgets the session', () => {
   afterEach(async () => {
     server.closeAllConnections()
     await new Promise((r) => server.close(r))
+  })
+
+  it('keeps tokens and agent grants independent for two accounts on the same server', async () => {
+    const first = await connectors.add({ name: 'GitHub Personal', kind: 'remote', url, auth: 'token', token: 'personal-token' })
+    await until(() => status(first) === 'connected')
+    db.saveAgent({ id: 'reader', name: 'Reader', handle: 'reader', role: '', color: 'sky', instructions: '', modelId: 'gpt-5.6-luna', effort: 'low', limit: 1000, used: 0, grants: { [first]: 'read' }, memory: 'read', computer: false, archived: false })
+    const second = await connectors.add({ name: 'GitHub Work', kind: 'remote', url, auth: 'token', token: 'work-token' })
+    await until(() => status(second) === 'connected')
+    expect(second).not.toBe(first)
+    expect(db.agent('reader')!.grants).toEqual({ [first]: 'read' })
+    await connectors.call(first, 'ping', {})
+    await connectors.call(second, 'ping', {})
+    expect(authorizations).toEqual(['Bearer personal-token', 'Bearer work-token'])
+    await connectors.setToken(second, 'rotated-work-token')
+    await until(() => status(second) === 'connected')
+    await connectors.call(second, 'ping', {})
+    await connectors.call(first, 'ping', {})
+    expect(authorizations.slice(-2)).toEqual(['Bearer rotated-work-token', 'Bearer personal-token'])
+    const secrets = new Secrets(db, plainCipher)
+    expect(await secrets.get(`connector:${first}:token`)).toBe('personal-token')
+    expect(await secrets.get(`connector:${second}:token`)).toBe('rotated-work-token')
+    await connectors.remove(second)
+    expect(connectors.get(second)).toBeUndefined()
+    expect(await secrets.get(`connector:${second}:token`)).toBeUndefined()
+    expect(connectors.get(first)?.name).toBe('GitHub Personal')
+    await connectors.call(first, 'ping', {})
+    expect(authorizations.at(-1)).toBe('Bearer personal-token')
+    expect(db.agent('reader')!.grants).toEqual({ [first]: 'read' })
   })
 
   it('a call after the session expired opens a new one and goes through', async () => {

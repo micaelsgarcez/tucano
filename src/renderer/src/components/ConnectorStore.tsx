@@ -55,8 +55,9 @@ export function ConnectorGrid({ status, onManage, query: initial = '' }: { statu
   }, [])
   const google = apps.google
   const words = query.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
-  const mine = connectors.filter((c) => !words || `${c.name} ${entryOf(c)?.about() ?? ''}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(words))
-  const found = searchCatalog(query).filter((e) => !connectors.some((c) => entryOf(c)?.id === e.id))
+  const mine = connectors.filter((c) => !words || `${c.name} ${entryOf(c)?.name ?? ''} ${entryOf(c)?.about() ?? ''}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(words))
+  const githubAdded = connectors.some((c) => entryOf(c)?.id === 'github')
+  const found = searchCatalog(query).filter((e) => e.id === 'github' || !connectors.some((c) => entryOf(c)?.id === e.id))
 
   const connect = (c: CatalogEntry): void => {
     if (c.app && !apps[c.app.provider]) return setAppSetup({ provider: c.app.provider, then: c })
@@ -159,7 +160,7 @@ export function ConnectorGrid({ status, onManage, query: initial = '' }: { statu
                       L('Conectando…', 'Connecting…')
                     ) : (
                       <>
-                        <Icon name="plus" size={13} /> {L('Conectar', 'Connect')}
+                        <Icon name="plus" size={13} /> {c.id === 'github' && githubAdded ? L('Conectar outra conta', 'Connect another account') : L('Conectar', 'Connect')}
                       </>
                     )}
                   </button>
