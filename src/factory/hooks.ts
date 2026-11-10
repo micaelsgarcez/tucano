@@ -8,7 +8,8 @@ export const hash = (value: string | Buffer): string => createHash('sha256').upd
 export class Capabilities {
   readonly files: Record<string, string>
   constructor(readonly root: string, readonly pin: string) {
-    const bytes = readFileSync(join(root, 'manifest.json'))
+    this.root = realpathSync(root)
+    const bytes = readFileSync(join(this.root, 'manifest.json'))
     if (hash(bytes) !== pin) throw new Error('Factory package manifest changed')
     const manifest = object(JSON.parse(bytes.toString()))
     if (manifest.version !== 1) throw new Error('Unsupported capability package')

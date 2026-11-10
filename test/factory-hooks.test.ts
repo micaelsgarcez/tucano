@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
@@ -42,4 +42,21 @@ test('an empty startup cannot masquerade as disabled mode when full was configur
   writeFileSync(manifestPath, JSON.stringify(manifest))
   const capabilities = new Capabilities(packageRoot, hash(readFileSync(manifestPath)))
   expect(() => new Hooks(capabilities, join(root, 'session'), 'session').start('Implement', false)).toThrow('Missing startup')
+})
+
+test('capabilities accept an aliased ancestor while rejecting links inside the package', () => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-package-alias-')); temporary.push(root)
+  const actual = join(root, 'actual'); mkdirSync(actual)
+  const pin = packageFixture(actual)
+  const alias = join(root, 'alias'); symlinkSync(actual, alias, 'junction')
+  const capabilities = new Capabilities(join(alias, 'package'), pin)
+  expect(capabilities.read('HEADLESS.md')).toContain('Only the factory tools')
+  writeFileSync(join(actual, 'package/HEADLESS.md'), 'changed')
+  expect(() => capabilities.read('HEADLESS.md')).toThrow('hash mismatch')
+  const original = join(actual, 'package/ponytail')
+  const outside = join(root, 'outside'); mkdirSync(outside)
+  writeFileSync(join(outside, 'ponytail-activate.js'), readFileSync(join(original, 'hooks/ponytail-activate.js')))
+  rmSync(join(original, 'hooks'), { recursive: true })
+  symlinkSync(outside, join(original, 'hooks'), 'junction')
+  expect(() => capabilities.read('ponytail/hooks/ponytail-activate.js')).toThrow('Unpinned')
 })

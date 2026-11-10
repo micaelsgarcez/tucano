@@ -1,10 +1,12 @@
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, test } from 'vitest'
+import * as childProcess from 'node:child_process'
+import { afterEach, expect, test, vi } from 'vitest'
 import { Factory } from '../src/factory/controller'
 import { factoryConfig } from './helpers/factory'
 import type { Ports } from '../src/factory/types'
+vi.mock('node:child_process', { spy: true })
 const cleanups: (() => void)[] = []
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
 function fixture(extra: Partial<Ports> = {}) {
@@ -150,18 +152,23 @@ test('operator control cancellation waits for observed drainage, stops native ru
   const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'build')
   const job = f.factory.store.newJob(a.id, 'build'); f.factory.store.launched(job.id, 'execution')
   f.factory.bind(job.id, f.cfg.executorAgentId, 'pending-message')
-  const bin = join(f.root, 'bin'); mkdirSync(bin)
-  const docker = join(bin, 'docker'); writeFileSync(docker, '#!/bin/sh\nprintf "running 42\\n"\n'); chmodSync(docker, 0o755)
-  const path = process.env.PATH; process.env.PATH = `${bin}:${path}`
+  const { spawn } = await vi.importActual<typeof childProcess>('node:child_process')
+  const inspect = vi.spyOn(childProcess, 'spawn')
+  let status = 'running 42'
+  inspect.mockImplementation((executable, args, options) => {
+    expect(executable).toBe('docker')
+    expect(args).toEqual(['inspect', '-f', '{{.State.Status}} {{.State.Pid}}', f.cfg.container])
+    return spawn(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(status)})`], options)
+  })
   try {
     writeFileSync(join(f.root, 'attempts', a.id, 'control.json'), JSON.stringify({ action: 'cancel', attemptId: a.id, observedDrained: true }))
     await f.factory.tick(); expect(f.factory.store.active()?.id).toBe(a.id); expect(stopped).toEqual([])
-    writeFileSync(docker, '#!/bin/sh\nprintf "exited 0\\n"\n')
+    status = 'exited 0'
     await f.factory.tick(); expect(f.factory.store.get(a.id).stage).toBe('cancelled'); expect(stopped).toEqual(['pending-message'])
     await f.factory.completed(job.id, { id: 'pending-message', author: { kind: 'agent', id: f.cfg.executorAgentId }, text: 'late', run: { status: 'done' }, usage: [] })
     expect(f.factory.store.get(a.id).stage).toBe('cancelled')
     expect(existsSync(join(f.root, 'attempts', a.id, 'message-pending-message.json'))).toBe(true)
-  } finally { process.env.PATH = path }
+  } finally { inspect.mockRestore() }
 })
 test('restart reconstructs the cancellation request after reserve-to-file crash and blocks an interrupted build gap', async () => {
   const f = fixture()
