@@ -27,10 +27,15 @@ jobs:
         run: npx vitest run test/team-stress.test.ts -t 'is main.s rule exactly' --reporter=verbose
       - name: Full suite crossover
         run: |
+          set +e
           if [ "${{ matrix.workers }}" = two ]; then
             npx vitest run --maxWorkers=2
+            first=$?
             npx vitest run
           else
             npx vitest run
+            first=$?
             npx vitest run --maxWorkers=2
           fi
+          second=$?
+          exit $((first || second))
