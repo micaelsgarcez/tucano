@@ -113,6 +113,12 @@ export const CATALOG: CatalogEntry[] = [
   e('jam', 'Jam', 'https://mcp.jam.dev/mcp', 'dev', 'Relatos de bug com vídeo e logs', 'Bug reports with video and logs'),
   e('github', 'GitHub', 'https://api.githubcopilot.com/mcp/', 'dev', 'Repositórios, issues e pull requests', 'Repositories, issues and pull requests', 'token', {
     fields: [
+      {
+        id: 'name',
+        label: () => L('Nome da conexão', 'Connection name'),
+        placeholder: 'GitHub - Acme',
+        hint: () => L('Use um nome para distinguir esta conta das outras.', 'Use a name that distinguishes this account from the others.')
+      },
       tokenField(
         'github_pat_…',
         () => L('Um token de acesso pessoal, de github.com/settings/personal-access-tokens, com os repositórios que os agentes podem ver.', 'A personal access token, from github.com/settings/personal-access-tokens, with the repositories the agents may see.'),
@@ -232,7 +238,7 @@ export function catalogInput(entry: CatalogEntry, values: Record<string, string>
     const env = Object.fromEntries(Object.entries(entry.local.env ?? {}).map(([k, v]) => [k, fill(v, false)]))
     return { name: entry.name, kind: 'stdio', command: entry.local.command, args: entry.local.args.map((a) => fill(a, false)), env }
   }
-  return { name: entry.name, kind: 'remote', url: fill(entry.url, true), auth: entry.auth, ...(entry.auth === 'token' ? { token: filled['token'] } : {}) }
+  return { name: filled['name'] ?? entry.name, kind: 'remote', url: fill(entry.url, true), auth: entry.auth, ...(entry.auth === 'token' ? { token: filled['token'] } : {}) }
 }
 
 // The catalog entry a connector came from: by its address (with any {field} in it), or by the package

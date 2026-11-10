@@ -44,7 +44,7 @@ describe('the connector catalog', () => {
     const get = (id: string) => CATALOG.find((c) => c.id === id)!
     expect(catalogInput(get('linear'))).toEqual({ name: 'Linear', kind: 'remote', url: 'https://mcp.linear.app/mcp', auth: 'oauth' })
     expect(catalogInput(get('mofi'))).toEqual({ name: 'Mofi', kind: 'remote', url: 'https://omofi.com.br/api/mcp', auth: 'oauth' }) // the server, not its page at /mcp
-    expect(catalogInput(get('github'), { token: ' github_pat_1 ' })).toMatchObject({ url: 'https://api.githubcopilot.com/mcp/', auth: 'token', token: 'github_pat_1' })
+    expect(catalogInput(get('github'), { name: ' GitHub Work ', token: ' github_pat_1 ' })).toMatchObject({ name: 'GitHub Work', url: 'https://api.githubcopilot.com/mcp/', auth: 'token', token: 'github_pat_1' })
     expect(catalogInput(get('dynatrace'), { environment: 'https://ABC12345.apps.dynatrace.com/ui', token: 't' }).url).toBe(
       'https://abc12345.apps.dynatrace.com/platform-reserved/mcp-gateway/v0.1/servers/dynatrace-mcp/mcp'
     )
@@ -59,11 +59,23 @@ describe('the connector catalog', () => {
     expect(() => catalogInput(get('metabase'), {})).toThrow()
   })
 
+  it('requires a name and fresh token for each GitHub account without renaming other services', () => {
+    const github = CATALOG.find((c) => c.id === 'github')!
+    const work = catalogInput(github, { name: ' GitHub Work ', token: ' work-token ' })
+    const personal = catalogInput(github, { name: 'GitHub Personal', token: 'personal-token' })
+    expect(work).toMatchObject({ name: 'GitHub Work', token: 'work-token' })
+    expect(personal).toMatchObject({ name: 'GitHub Personal', token: 'personal-token', url: work.url })
+    expect(() => catalogInput(github, { name: '  ', token: 't' })).toThrow()
+    expect(() => catalogInput(github, { token: 't' })).toThrow()
+    expect(() => catalogInput(github, { name: 'GitHub Work', token: '  ' })).toThrow()
+    expect(catalogInput(CATALOG.find((c) => c.id === 'linear')!, { name: 'Not Linear' }).name).toBe('Linear')
+  })
+
   it('knows which service a connector came from, from what was filled in', () => {
     const get = (id: string) => CATALOG.find((c) => c.id === id)!
     for (const [id, values] of [
       ['linear', {}],
-      ['github', { token: 't' }],
+      ['github', { name: 'GitHub Work', token: 't' }],
       ['dynatrace', { environment: 'abc', token: 't' }],
       ['snowflake', { account: 'a', database: 'b', schema: 'c', server: 'd', token: 't' }],
       ['metabase', { site: 'https://bi.acme.com' }],

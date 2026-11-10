@@ -28,11 +28,11 @@ let db: Db
 let gateway: Gateway
 let settings: Settings
 let events: CoreEvent[]
-let called: { name: string; args: Record<string, unknown> }[]
+let called: { connectorId: string; name: string; args: Record<string, unknown> }[]
 const github: Connector = { id: 'gh', name: 'GitHub', kind: 'remote', url: 'https://api.githubcopilot.com/mcp/', args: [], envKeys: [], auth: 'token', status: 'connected', tools: [] }
 const connectors = {
-  list: () => [{ ...github, tools: db.tools('gh') }],
-  call: async (_id: string, name: string, args: Record<string, unknown>) => (called.push({ name, args }), textResult(`${name}: ok`))
+  list: (): Connector[] => db.connectors().map((c) => ({ ...c, status: 'connected', tools: db.tools(c.id) })),
+  call: async (connectorId: string, name: string, args: Record<string, unknown>) => (called.push({ connectorId, name, args }), textResult(`${name}: ok`))
 }
 const computers = {
   call: async () => ({ result: textResult('exit code 0') }),
@@ -60,12 +60,12 @@ function scripted(id: EngineId, seen: Seen, calls: { tool: string; args: Record<
   }
 }
 
-async function turn(engine: EngineId, o: { grant?: GrantLevel; kind?: 'mac' | 'linux' | 'none'; autonomy?: Autonomy; calls?: { tool: string; args: Record<string, unknown> }[] } = {}): Promise<Seen> {
+async function turn(engine: EngineId, o: { grant?: GrantLevel; grants?: Agent['grants']; kind?: 'mac' | 'linux' | 'none'; autonomy?: Autonomy; calls?: { tool: string; args: Record<string, unknown> }[] } = {}): Promise<Seen> {
   const kind = o.kind ?? 'mac'
   const lia: Agent = {
     ...db.agent('lia')!,
     modelId: engine === 'codex' ? 'gpt-5.6-luna' : 'sonnet',
-    grants: { gh: o.grant ?? 'read_write' },
+    grants: o.grants ?? { gh: o.grant ?? 'read_write' },
     computer: kind !== 'none',
     computerKind: kind === 'mac' ? 'mac' : 'linux',
     ...(o.autonomy ? { autonomy: o.autonomy } : {})
@@ -131,6 +131,27 @@ describe.each(['claude', 'codex'] as EngineId[])('on %s, an agent on this comput
     expect(seen.tools).toContain('pedir_acesso')
     expect(seen.turn!.system).toContain('Você só lê o GitHub pelo conector GitHub')
     expect(seen.turn!.system).toContain('peça com pedir_acesso (nivel read_write)')
+  })
+
+  it('keeps each account and its permissions separate in the tools and prompt', async () => {
+    db.saveConnector({ ...github, id: 'work', name: 'GitHub Work' })
+    db.syncTools('work', db.tools('gh'))
+    db.saveConnector({ ...github, id: 'hidden', name: 'GitHub Hidden' })
+    db.syncTools('hidden', db.tools('gh'))
+    const seen = await turn(engine, {
+      grants: { gh: 'read', work: 'read_write' },
+      calls: [{ tool: 'github_work__push_files', args: { owner: 'work', repo: 'r', branch: 'fix-login', files: [], message: 'fix' } }]
+    })
+    expect(seen.tools).toContain('github__get_file_contents')
+    expect(seen.tools).not.toContain('github__push_files')
+    expect(seen.tools).toContain('github_work__push_files')
+    expect(seen.tools.some((name) => name.startsWith('github_hidden__'))).toBe(false)
+    expect(seen.turn!.system).toContain('Você só lê o GitHub pelo conector GitHub:')
+    expect(seen.turn!.system).toContain('Você lê e escreve no GitHub pelo conector GitHub Work.')
+    expect(seen.turn!.system).not.toContain('Você lê e escreve no GitHub pelo conector GitHub.')
+    expect(seen.turn!.system).not.toContain('GitHub Hidden')
+    expect(called).toEqual([{ connectorId: 'work', name: 'push_files', args: { owner: 'work', repo: 'r', branch: 'fix-login', files: [], message: 'fix' } }])
+    expect(db.agent('lia')!.grants).toEqual({ gh: 'read', work: 'read_write' })
   })
 
   it('on Linux: no credentials there, so it publishes through the connector', async () => {
