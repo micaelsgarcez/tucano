@@ -591,6 +591,8 @@ export class Db {
           DELETE FROM settings WHERE key IN ('quota', 'telegram', 'accounts');
           UPDATE agents SET account = NULL, fallback_account = NULL;
           DELETE FROM secrets WHERE key LIKE 'telegram:%' OR key = 'github:proxy-key' OR key LIKE '%:oauth_verifier';
+          DELETE FROM meta WHERE key LIKE 'orbit:%';
+          DELETE FROM secrets WHERE key LIKE 'orbit:%';
           DELETE FROM person_keys;
           DELETE FROM removed_keys;
           DELETE FROM invites;

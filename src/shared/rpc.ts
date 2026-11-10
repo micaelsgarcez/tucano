@@ -1,3 +1,4 @@
+import type { OrbitSource, OrbitProject, OrbitProjectData, OrbitTaskPage, OrbitTaskDetail } from './orbit'
 // The contract between the renderer and the core, carried over a MessagePort.
 import type { Answer } from './questions'
 import type { WikiChange, WikiGitSetup, WikiGitStatus, WikiGitTest, WikiHit, WikiPage, WikiImport, WikiPageInfo, WikiReview, WikiSource, WikiVersion } from './types'
@@ -32,6 +33,13 @@ export interface Snapshot {
 }
 
 export interface Api {
+  orbitSource(): OrbitSource | null
+  orbitSaveSource(p: { baseUrl: string; workspaceId: string; token: string }): Promise<OrbitSource>
+  orbitProjects(p: { sourceId: string }): Promise<OrbitProject[]>
+  orbitProjectData(p: { sourceId: string; projectId: string }): Promise<OrbitProjectData>
+  orbitTasks(p: { sourceId: string; projectId: string; cursor?: string }): Promise<OrbitTaskPage>
+  orbitTask(p: { sourceId: string; taskId: string }): Promise<OrbitTaskDetail>
+  orbitAssignAgent(p: { sourceId: string; taskId: string; role: 'executor' | 'reviewer'; agentId: string | null }): Promise<OrbitTaskDetail>
   markRead(p: { conversationId: string }): void
   snapshot(): Snapshot
   olderMessages(p: { conversationId: string; before: number; through?: string }): { messages: Message[]; since: number } // a page from before `before` (or back to `through`, a message to show), with their threads; since: from when it's whole now, 0 once all of it is

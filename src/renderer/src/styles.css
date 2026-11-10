@@ -10913,3 +10913,17 @@ button.agent-card__now:hover {
 .agent-models__identity { display: flex; align-items: center; gap: 10px; flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
 .agent-models__choice { display: grid; gap: 6px; flex: 2 1 300px; min-width: 0; }
 .agent-models [role="status"]:not(:empty) { margin-top: 12px; }
+
+
+.orbit-source { font-size: 12px; opacity: .7; overflow-wrap: anywhere; }
+.orbit-config { display: grid; gap: 16px; }
+.orbit-columns { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(280px, 1.5fr); gap: 24px; margin-top: 20px; }
+.orbit-task-list, .orbit-detail { min-width: 0; }
+.orbit-statuses { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; font-size: 12px; }
+.orbit-task { display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; padding: 14px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: inherit; overflow-wrap: anywhere; }
+.orbit-task span { font-size: 12px; opacity: .7; }
+.orbit-task.is-selected { border-color: currentColor; }
+.orbit-detail { padding: 0 8px; overflow-wrap: anywhere; }
+.orbit-assignment { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.orbit-assignment .field { flex: 1; }
+@media (max-width: 800px) { .orbit-columns { grid-template-columns: 1fr; } }
