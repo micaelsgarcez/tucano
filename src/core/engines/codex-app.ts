@@ -208,7 +208,7 @@ const breakdown = (v: unknown): Breakdown => {
 // paragraph), the running token count, web searches, and how it ended. Pure, so it can be fed the
 // output of the real CLI. `line` takes one JSON message, `message` the same already parsed.
 export function codexAppParser(): Parser & { message(m: RpcMessage): EngineEvent[]; readonly finished: boolean } {
-  const items: { id: string; text: string; streamed: boolean }[] = []
+  const items: { id: string; text: string; streamed: boolean; phase?: string; completed?: boolean }[] = []
   let base: Breakdown | undefined // the thread's total before this turn
   let total: Breakdown = { input: 0, cached: 0, output: 0 }
   let last: Breakdown = { input: 0, cached: 0, output: 0 }
@@ -228,6 +228,11 @@ export function codexAppParser(): Parser & { message(m: RpcMessage): EngineEvent
     const p = m.params ?? {}
     const out: EngineEvent[] = []
     switch (m.method) {
+      case 'item/started': {
+        const item = (p['item'] ?? {}) as Record<string, unknown>
+        if (item['type'] === 'agentMessage' && typeof item['phase'] === 'string') itemOf(String(item['id'])).phase = item['phase']
+        break
+      }
       case 'item/agentMessage/delta': {
         const delta = typeof p['delta'] === 'string' ? p['delta'] : ''
         if (!delta) break
@@ -240,8 +245,10 @@ export function codexAppParser(): Parser & { message(m: RpcMessage): EngineEvent
       }
       case 'item/completed': {
         const item = (p['item'] ?? {}) as Record<string, unknown>
+        if (item['type'] === 'agentMessage' && typeof item['phase'] === 'string') itemOf(String(item['id'])).phase = item['phase']
         if (item['type'] === 'agentMessage' && typeof item['text'] === 'string') {
           const it = itemOf(String(item['id']))
+          it.completed = true
           // A message that came whole (no deltas), or more than its deltas said: the rest of it.
           const full = item['text']
           if (full.startsWith(it.text) && full.length > it.text.length) {
@@ -280,7 +287,14 @@ export function codexAppParser(): Parser & { message(m: RpcMessage): EngineEvent
         finished = true
         const turn = (p['turn'] ?? {}) as Record<string, unknown>
         if (turn['status'] === 'completed') {
-          out.push({ type: 'done', text: items.map((i) => i.text).filter(Boolean).join('\n\n'), usage: usage(), context: last.input + last.output })
+          const finals = items.filter(i => i.phase === 'final_answer')
+          const final = finals.length === 1 ? finals[0] : undefined
+          const finalAnswer: Extract<EngineEvent, { type: 'done' }>['finalAnswer'] = items.some(i => i.phase !== undefined)
+            ? final?.completed && final.text.trim()
+              ? { kind: 'text', text: final.text }
+              : { kind: 'error', message: 'Codex phased turn requires exactly one nonempty completed final answer' }
+            : undefined
+          out.push({ type: 'done', ...(finalAnswer ? { finalAnswer } : {}), text: items.map((i) => i.text).filter(Boolean).join('\n\n'), usage: usage(), context: last.input + last.output })
         } else if (turn['status'] === 'failed') out.push({ type: 'error', message: errorText(turn['error']) })
         // interrupted: stopped on purpose, nothing to say
         break

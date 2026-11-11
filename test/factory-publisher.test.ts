@@ -212,3 +212,114 @@ it('accepts a successful latest rerun and reads commit statuses across pages', a
   }
   expect(await new Publisher(config, async () => ({ token }), { fetch: rerun, remote }).publish(input)).toMatchObject({ state: 'published', ci: { passed: true } })
 })
+
+function correction(evidence = false) {
+  const previous = input.candidateSha, round = (input.round ?? 0) + 1, directory = join(root, 'rounds', String(round)), baseline = join(root, 'baseline')
+  mkdirSync(directory, { recursive: true })
+  if (!evidence) { writeFileSync(join(baseline, 'file'), `correction ${round}`); git(baseline, 'commit', '-am', `correction ${round}`) }
+  const candidateSha = git(baseline, 'rev-parse', 'HEAD'), parentSha = git(baseline, 'show', '-s', '--format=%P', 'HEAD')
+  git(baseline, 'bundle', 'create', join(directory, 'candidate.bundle'), 'HEAD', `^${input.baseSha}`)
+  writeFileSync(join(directory, 'candidate.json'), JSON.stringify({ version: 2, baseSha: input.baseSha, parentSha, candidateSha }))
+  writeFileSync(join(directory, 'verify.json'), JSON.stringify({ candidateSha, passed: true }))
+  input = { ...input, round, parentSha, candidateSha, expectedHead: previous, expectedPr: 1 }
+}
+it('fast forwards repeated corrections on the same PR and reconciles an already pushed candidate', async () => {
+  expect((await publisher().publish(input)).state).toBe('published')
+  for (let round = 1; round <= 3; round++) {
+    correction()
+    const dynamic: typeof fetch = async (url, init) => {
+      head = ref()
+      return mockFetch(url, init)
+    }
+    const p = new Publisher(config, async () => ({ token }), { fetch: dynamic, remote })
+    expect(await p.publish(input)).toMatchObject({ state: 'published', pr: 1, ci: { passed: true } })
+    expect(ref()).toBe(input.candidateSha)
+    expect((await p.publish(input)).state).toBe('published')
+  }
+  expect(creates).toBe(1)
+})
+it('observes an evidence-only round without writing the branch', async () => {
+  await publisher().publish(input); correction(true)
+  git(remote, 'config', 'receive.denyNonFastForwards', 'true')
+  writeFileSync(join(remote, 'hooks/pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  expect(await publisher().publish(input)).toMatchObject({ state: 'published', pr: 1, ci: { passed: true } })
+  expect(ref()).toBe(input.candidateSha); expect(creates).toBe(1)
+})
+it('refuses a missing established PR or branch, closed PR and premature merge', async () => {
+  await publisher().publish(input); correction()
+  const previous = input.expectedHead
+  head = previous ?? null
+  prExists = false; expect((await publisher().publish(input)).state).toBe('conflict'); prExists = true
+  for (const merged of [false, true]) {
+    const closed: typeof fetch = async (url, init) => {
+      const response = await mockFetch(url, init)
+      if (!String(url).endsWith('/pulls/1')) return response
+      return Response.json({ ...await response.json(), state: 'closed', merged })
+    }
+    expect((await new Publisher(config, async () => ({ token }), { fetch: closed, remote }).publish(input)).state).toBe('conflict')
+    expect(ref()).toBe(previous)
+  }
+  git(remote, 'update-ref', '-d', `refs/heads/${branch}`)
+  expect((await publisher().publish(input)).state).toBe('conflict'); expect(ref()).toBeNull(); expect(creates).toBe(1)
+})
+it('enforces the exact Git lease when another writer changes the head after observation', async () => {
+  await publisher().publish(input); correction(); head = input.expectedHead ?? null
+  let grants = 0
+  const p = new Publisher(config, async () => {
+    if (++grants === 2) git(remote, 'update-ref', `refs/heads/${branch}`, input.baseSha)
+    return { token }
+  }, { fetch: mockFetch, remote })
+  expect((await p.publish(input)).state).toBe('conflict'); expect(ref()).toBe(input.baseSha); expect(creates).toBe(1)
+})
+it('rejects correction ancestry and stale CI from the previous head', async () => {
+  await publisher().publish(input); correction()
+  expect((await publisher().publish({ ...input, expectedHead: input.baseSha })).state).toBe('conflict')
+  const stale: typeof fetch = async (url, init) => {
+    head = ref()
+    if (new URL(String(url)).pathname.endsWith('/actions/runs')) return Response.json({ workflow_runs: [workflow({ head_sha: input.expectedHead })] })
+    return mockFetch(url, init)
+  }
+  expect((await new Publisher(config, async () => ({ token }), { fetch: stale, remote }).publish(input)).state).toBe('waiting')
+  expect(ref()).toBe(input.candidateSha); expect(creates).toBe(1)
+})
+it('only observes a merged correction when explicitly approved and already at the candidate', async () => {
+  await publisher().publish(input); correction(true)
+  const merged: typeof fetch = async (url, init) => {
+    const response = await mockFetch(url, init)
+    if (!String(url).endsWith('/pulls/1')) return response
+    return Response.json({ ...await response.json(), state: 'closed', merged: true })
+  }
+  const p = new Publisher(config, async () => ({ token }), { fetch: merged, remote })
+  expect((await p.publish(input)).state).toBe('conflict')
+  expect(await p.publish({ ...input, allowMerged: true })).toMatchObject({ state: 'published', merged: true })
+  git(remote, 'update-ref', '-d', `refs/heads/${branch}`)
+  expect(await p.publish({ ...input, allowMerged: true })).toMatchObject({ state: 'published', merged: true })
+  expect(ref()).toBeNull()
+  git(join(root, 'baseline'), 'push', remote, `${input.candidateSha}:refs/heads/${branch}`)
+  correction(); head = input.expectedHead ?? null
+  expect((await p.publish({ ...input, allowMerged: true })).state).toBe('conflict'); expect(ref()).toBe(input.expectedHead)
+})
+it('rejects a premature merge observed during CI, including the first round', async () => {
+  let merged = false
+  const during: typeof fetch = async (url, init) => {
+    const response = await mockFetch(url, init)
+    if (String(url).includes('/actions/')) merged = true
+    if (!String(url).endsWith('/pulls/1') || !merged) return response
+    return Response.json({ ...await response.json(), state: 'closed', merged: true })
+  }
+  expect((await new Publisher(config, async () => ({ token }), { fetch: during, remote }).publish({ ...input, allowMerged: false })).state).toBe('conflict')
+})
+
+it('rejects unsupported candidate receipt versions before publication', async () => {
+  writeFileSync(join(root, 'candidate.json'), JSON.stringify({ version: 3, baseSha: input.baseSha, candidateSha: input.candidateSha }))
+  expect((await publisher().publish(input)).state).toBe('conflict'); expect(ref()).toBeNull(); expect(creates).toBe(0)
+})
+
+it('retains fixed PR identity on round-zero polls without an expected previous head', async () => {
+  expect((await publisher().publish(input)).state).toBe('published')
+  expect(await publisher().publish({ ...input, expectedPr: 1 })).toMatchObject({ state: 'published', pr: 1 })
+  expect(creates).toBe(1)
+  prExists = false
+  expect((await publisher().publish({ ...input, expectedPr: 1 })).state).toBe('conflict')
+  expect(creates).toBe(1)
+})

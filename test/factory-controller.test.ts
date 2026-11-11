@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as childProcess from 'node:child_process'
@@ -73,8 +73,8 @@ test.each([true, false])('passing candidate automatically publishes, packet read
   await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
   const a = f.factory.store.active()!; const dir = join(f.root, 'attempts', a.id)
   const operations = join(f.root, 'operations.py')
-  writeFileSync(operations, `import json,pathlib,sys\np=pathlib.Path(sys.argv[2])\na=sys.argv[1]\nif a=='export':\n (p/'candidate.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','baseSha':'${'b'.repeat(40)}'}))\n (p/'candidate.patch').write_text('safe patch')\nif a=='verify': (p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))\n`)
-  writeFileSync(join(f.root, 'publication.py'), '')
+  writeFileSync(operations, `import json,pathlib,sys\np=pathlib.Path(sys.argv[2])\na=sys.argv[1]\nif a=='export':\n (p/'candidate.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','baseSha':'${'b'.repeat(40)}'}))\n (p/'candidate.bundle').write_bytes(b'bundle')\n (p/'candidate.patch').write_text('safe patch')\nif a=='verify': (p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))\n`)
+  writeFileSync(join(f.root, 'publication.py'), `import json,pathlib,sys\np=pathlib.Path(sys.argv[2])\nif sys.argv[1]=='assess': (p/('assessment-'+sys.argv[5]+'.json')).write_text(json.dumps({'decision':'approved','review':{}}))\n`)
   f.cfg.operationsPath = operations
   f.factory.store.transition(a.id, 'verify'); await f.factory.tick()
   expect(f.factory.store.get(a.id).stage).toBe('review'); expect(f.launched).toHaveLength(0); expect(completed).toBe(0)
@@ -126,7 +126,7 @@ test('native launch result cannot resurrect a job that already completed', async
   expect(f.factory.store.job(job.id)).toMatchObject({ state: 'done', executionId: 'execution-after-completion' })
 })
 
-test('oversized packet blocks before publishing', async () => {
+test('oversized packet blocks review after publication', async () => {
   const comments: string[] = []
   const f = fixture({ comment: async (_, body) => { comments.push(body) } })
   await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
@@ -134,10 +134,13 @@ test('oversized packet blocks before publishing', async () => {
   writeFileSync(operations, `import json,pathlib,sys
 p=pathlib.Path(sys.argv[2])
 (p/'candidate.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','baseSha':'${'b'.repeat(40)}'}))
-(p/'candidate.patch').write_text('x'*31000)
+(p/'candidate.bundle').write_bytes(b'bundle')
+(p/'candidate.patch').write_text('x'*81000)
 (p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))
 `)
   f.cfg.operationsPath = operations; f.factory.store.transition(a.id, 'verify'); await f.factory.tick()
+  writeFileSync(join(f.root, 'attempts', a.id, 'publication.json'), JSON.stringify({ state: 'published', candidateSha: 'a'.repeat(40), pr: 7, ci: { passed: true, source: 'controller' } }))
+  await f.factory.tick()
   expect(f.factory.store.get(a.id).blocked).toContain('packet limit')
   expect(comments.some(c => c.includes('Publique manualmente'))).toBe(false)
 })
@@ -190,7 +193,7 @@ test('restart reconstructs the cancellation request after reserve-to-file crash 
   expect(recovered.store.get(a.id).blocked).toContain('Task creation interrupted')
   recovered.store.bindTask(a.id, '66666666-6666-4666-8666-666666666666')
   recovered.store.transition(a.id, 'build'); recovered.store.recover()
-  expect(recovered.store.get(a.id).blocked).toContain('restart')
+  expect(recovered.store.get(a.id).blocked).toBeNull()
 })
 
 test('permissions and CI recover without another export or duplicate review, with deduplicated native comments', async () => {
@@ -205,6 +208,7 @@ test('permissions and CI recover without another export or duplicate review, wit
   writeFileSync(operations, `import json,pathlib,sys\np=pathlib.Path(sys.argv[2])\nassert sys.argv[1]=='verify', 'Candidate must never be exported twice'\n(p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))`)
   f.cfg.operationsPath = operations
   writeFileSync(join(dir, 'candidate.json'), JSON.stringify({ candidateSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }))
+  writeFileSync(join(dir, 'candidate.bundle'), 'bundle')
   writeFileSync(join(dir, 'candidate.patch'), 'original candidate bytes')
   f.factory.store.transition(a.id, 'verify'); await f.factory.tick()
   expect(f.factory.store.get(a.id).stage).toBe('review')
@@ -294,7 +298,7 @@ test.each(['skills', 'package'])('prelaunch rejects invalid %s before reserving 
   const a = f.factory.store.active()!
   if (invalid === 'package') {
     const db = new DatabaseSync(join(f.root, '../factory.sqlite'))
-    db.prepare('UPDATE attempts SET package_hash=? WHERE id=?').run('f'.repeat(64), a.id); db.close()
+    db.prepare('UPDATE rounds SET package_hash=? WHERE attempt_id=? AND round=0').run('f'.repeat(64), a.id); db.close()
   }
   f.cfg.operationsPath = join(f.root, 'operations.py'); writeFileSync(f.cfg.operationsPath, '')
   writeFileSync(join(f.root, 'attempts', a.id, 'prepared.json'), '{}')
@@ -330,4 +334,217 @@ test('automatic reconciliation polls review every 30 seconds and merge every 120
     await vi.advanceTimersByTimeAsync(30_000); expect(tick).toHaveBeenCalledTimes(4)
     f.factory.close()
   } finally { vi.useRealTimers() }
+})
+
+function loopOperations(f: ReturnType<typeof fixture>): void {
+  const trusted = process.env.TUCANO_FACTORY_OPERATIONS_PATH
+  if (trusted) { f.cfg.reviewerAgentId = '7950fa20-855b-42b6-bcc3-4ded989a3f9f'; cpSync(join(trusted, 'controller.py'), join(f.root, 'controller.py')); cpSync(join(trusted, '../review'), join(f.root, '../review'), { recursive: true }) }
+  f.cfg.operationsPath = join(f.root, 'operations.py')
+  writeFileSync(f.cfg.operationsPath, `import json,pathlib,sys
+root=pathlib.Path(sys.argv[2]); n=int(sys.argv[4]); p=root if n==0 else root/'rounds'/str(n)
+p.mkdir(parents=True,exist_ok=True)
+a=sys.argv[1]; sha=('%040x'%(n+10)); parent=('%040x'%(n+9)) if n else 'b'*40
+if a=='seed':
+ assert (p/'round.json').exists()
+ if not (p/'seed.json').exists(): (p/'seed.json').write_text(json.dumps({'parentSha':parent}))
+if a=='export':
+ (p/'candidate.json').write_text(json.dumps({'version':2,'candidateSha':sha,'baseSha':'b'*40,'parentSha':parent}))
+ (p/'candidate.patch').write_text('patch round '+str(n))
+ (p/'candidate.bundle').write_bytes(b'bundle'+str(n).encode())
+if a=='verify': (p/'verify.json').write_text(json.dumps({'candidateSha':sha,'passed':True,'commands':[['test']]}))
+`)
+  writeFileSync(join(f.root, 'publication.py'), `import json,pathlib,sys
+root=pathlib.Path(sys.argv[2]); n=int(sys.argv[4]); p=root if n==0 else root/'rounds'/str(n)
+if sys.argv[1]=='assess':
+ m=json.loads((p/('message-'+sys.argv[5]+'.json')).read_text()); manifest=json.loads((p/'review-manifest.json').read_text())
+ try:
+  r=json.loads(m['text']); assert r['head_sha']==manifest['head_sha']; assert r['packet_sha256']==manifest['packet_sha256']; assert r['verdict'] in ['approved','rejected']
+  out={'decision':r['verdict'],'review':r}
+ except Exception: out={'decision':'invalid','reason':'Review must be whole JSON bound to exact packet'}
+ (p/('assessment-'+sys.argv[5]+'.json')).write_text(json.dumps(out))
+`)
+  if (trusted) cpSync(join(trusted, 'publication.py'), join(f.root, 'publication.py'))
+  writeFileSync(join(f.root, 'config.json'), JSON.stringify(f.cfg))
+}
+function published(input: Parameters<Ports['publish']>[0]) {
+  return { state: 'published' as const, candidateSha: input.candidateSha, pr: 7, url: 'https://github.com/micaelsgarcez/central/pull/7', ci: { passed: true, source: 'controller' as const, checks: [], observedAt: 1 }, merged: false, by: null, byType: null }
+}
+async function completeJob(f: ReturnType<typeof fixture>, role: 'build' | 'review', text: string | ((packet: Record<string, unknown>) => string)) {
+  const a = f.factory.store.active()!; const job = f.factory.store.jobs(a.id).findLast(j => j.round === a.round && j.role === role && j.state === 'running')!
+  expect(job).toBeDefined()
+  const messageId = `message-${job.id}`; const agentId = role === 'build' ? f.cfg.executorAgentId : f.cfg.reviewerAgentId
+  const turn = f.factory.bind(job.id, agentId, messageId)!; const context = turn.context('task'); turn.delivered(context, nativeProfile)
+  const dir = join(f.root, 'attempts', a.id, ...(a.round ? ['rounds', String(a.round)] : []))
+  if (role === 'review') await turn.call('factory_read', { path: '@packet' })
+  if (a.round && role === 'build') {
+    expect(await turn.call('factory_read', { path: '@feedback' })).toContain('rejected')
+    await expect(turn.call('factory_delegate', { instruction: 'Explore' })).rejects.toThrow('cannot delegate')
+  }
+  const completion = { id: messageId, author: { kind: 'agent' as const, id: agentId }, text: typeof text === 'string' ? text : text(JSON.parse(readFileSync(join(dir, 'review-manifest.json'), 'utf8'))), run: { status: 'done' }, usage: [] }
+  await f.factory.completed(job.id, completion)
+  return { job, completion, turn }
+}
+const verdict = (decision: 'approved' | 'rejected') => (m: Record<string, unknown>) => JSON.stringify({ head_sha: m.head_sha, packet_sha256: m.packet_sha256, verdict: decision, criteria: [{ id: 'C1', met: decision === 'approved', evidence: 'Observed test receipt' }], findings: decision === 'rejected' ? ['Fix the failing behavior'] : [], limitations: [] })
+
+test('repeated Nina rejections reserve distinct corrections, verify every round and retain one PR until exact approval', async () => {
+  const publications: Parameters<Ports['publish']>[0][] = []
+  const f = fixture({ publish: async input => { publications.push(input); return published(input) } }); loopOperations(f)
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; const root = join(f.root, 'attempts', a.id)
+  const original = readFileSync(join(root, 'request.json'), 'utf8')
+  writeFileSync(join(root, 'prepared.json'), '{}'); await f.factory.tick()
+  for (let round = 0; round < 3; round++) {
+    const built = await completeJob(f, 'build', `Build ${round}`)
+    const hooks = join(root, ...(round ? ['rounds', String(round)] : []), 'hooks', built.completion.id)
+    if (round) {
+      expect(existsSync(join(hooks, 'receipt-1.json'))).toBe(false)
+      expect(readFileSync(join(hooks, 'data/.ponytail-active'), 'utf8')).toBe('lite')
+    }
+    writeFileSync(join(hooks, 'data/.ponytail-active'), 'lite')
+    await f.factory.tick()
+    expect(f.factory.store.get(a.id)).toMatchObject({ round, stage: 'review', blocked: null })
+    const { job, completion, turn } = await completeJob(f, 'review', verdict(round < 2 ? 'rejected' : 'approved'))
+    await f.factory.completed(job.id, completion)
+    await expect(turn.call('factory_read', { path: '@packet' })).rejects.toThrow('Stale')
+    if (round < 2) { expect(f.factory.store.get(a.id)).toMatchObject({ round: round + 1, stage: 'build' }); await f.factory.tick() }
+  }
+  expect(f.factory.store.get(a.id)).toMatchObject({ stage: 'merge', round: 2, pr: 7 })
+  expect(f.launched.filter(j => j.role === 'executor')).toHaveLength(3)
+  expect(f.launched.filter(j => j.role === 'reviewer')).toHaveLength(3)
+  expect(new Set(f.launched.map(j => j.requestId)).size).toBe(6)
+  expect(publications.map(p => p.round)).toEqual([0, 1, 2])
+  expect(publications.slice(1).every(p => p.expectedPr === 7 && p.expectedHead && p.attemptDir === root)).toBe(true)
+  expect(readFileSync(join(root, 'request.json'), 'utf8')).toBe(original)
+  expect(readFileSync(join(root, 'candidate.patch'), 'utf8')).toBe('patch round 0')
+  expect(readFileSync(join(root, 'rounds/2', `review-${f.factory.store.get(a.id).candidateSha}.md`), 'utf8')).toContain('Artifact SHA256')
+})
+
+test.each([false, true])('Nina gets one format repair on the same packet; second invalid=%s blocks precisely', async twiceInvalid => {
+  const comments: string[] = []
+  const f = fixture({ comment: async (_, text) => { comments.push(text) }, publish: async input => published(input) }); loopOperations(f)
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; const dir = join(f.root, 'attempts', a.id)
+  f.factory.store.transition(a.id, 'verify'); await f.factory.tick(); await f.factory.tick()
+  const packet = readFileSync(join(dir, `review-${f.factory.store.get(a.id).candidateSha}.md`), 'utf8')
+  await completeJob(f, 'review', '```json invalid```'); await f.factory.tick()
+  expect(readFileSync(join(dir, `review-${f.factory.store.get(a.id).candidateSha}.md`), 'utf8')).toBe(packet)
+  await completeJob(f, 'review', twiceInvalid ? 'Still invalid' : verdict('approved'))
+  expect(f.launched).toHaveLength(2)
+  expect(f.factory.store.get(a.id).round).toBe(0)
+  if (twiceInvalid) { expect(f.factory.store.get(a.id).blocked).toContain('invalid after one repair:'); expect(comments.at(-1)).toContain('Factory bloqueada: Nina invalid') }
+  else expect(f.factory.store.get(a.id).stage).toBe('merge')
+})
+
+test('pause preserves reservation and replays the same request after resume; native failure blocks', async () => {
+  let paused = true; let waiting = false
+  const requests: string[] = []; const comments: string[] = []
+  const f = fixture({ comment: async (_, text) => { comments.push(text) }, paused: () => paused, launch: async input => { requests.push(input.requestId); if (waiting) return { waiting: 'Native agents are paused' }; throw new Error('native budget exhausted') } }); loopOperations(f)
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; writeFileSync(join(f.root, 'attempts', a.id, 'prepared.json'), '{}')
+  await f.factory.tick(); expect(f.factory.store.jobs(a.id)).toHaveLength(1)
+  paused = false; waiting = true; await f.factory.tick()
+  expect(f.factory.store.jobs(a.id)).toHaveLength(1); expect(f.factory.store.get(a.id).blocked).toBeNull()
+  waiting = false; await f.factory.tick()
+  expect(requests).toHaveLength(2); expect(requests[0]).toBe(requests[1]); expect(f.factory.store.get(a.id).blocked).toContain('budget exhausted')
+  expect(comments.some(text => text.includes('Factory bloqueada') && text.includes('budget exhausted'))).toBe(true)
+})
+
+test('restart consumes durable unassessed review completion and replays the reserved correction request', async () => {
+  const f = fixture({ publish: async input => published(input) }); loopOperations(f)
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; const dir = join(f.root, 'attempts', a.id)
+  f.factory.store.transition(a.id, 'verify'); await f.factory.tick(); await f.factory.tick()
+  const review = f.factory.store.jobs(a.id).findLast(j => j.role === 'review')!
+  const messageId = 'durable-review'; const turn = f.factory.bind(review.id, f.cfg.reviewerAgentId, messageId)!
+  const context = turn.context('review'); turn.delivered(context, nativeProfile); await turn.call('factory_read', { path: '@packet' })
+  const completion = { id: messageId, author: { kind: 'agent', id: f.cfg.reviewerAgentId }, run: { status: 'done' }, usage: [], text: verdict('rejected')(JSON.parse(readFileSync(join(dir, 'review-manifest.json'), 'utf8'))) }
+  writeFileSync(join(dir, `message-${messageId}.json`), JSON.stringify(completion))
+  f.factory.close()
+  const requests: string[] = []
+  const ports: Ports = { ...testPorts(f.root), publish: async input => published(input), launch: async input => { requests.push(input.requestId); return { waiting: 'paused during native setup' } }, createTask: async () => { throw new Error('Cannot recreate') }, task: async () => { throw new Error('Cannot recreate') }, stop: () => {}, completeTask: async () => {}, comment: async () => {} }
+  const recovered = new Factory(f.root, f.cfg, ports); cleanups.push(() => recovered.close())
+  expect(recovered.store.get(a.id).blocked).toBeNull()
+  await recovered.tick()
+  expect(recovered.store.get(a.id)).toMatchObject({ round: 1, stage: 'build', blocked: null })
+  const reserved = recovered.store.jobs(a.id).find(j => j.round === 1)!
+  expect(reserved.state).toBe('reserved')
+  await recovered.tick(); recovered.close()
+  const again = new Factory(f.root, f.cfg, ports); cleanups.push(() => again.close())
+  await again.tick(); await again.tick()
+  expect(requests).toEqual([reserved.id, reserved.id, reserved.id])
+  expect(again.store.jobs(a.id)).toHaveLength(2)
+  expect(again.store.get(a.id).blocked).toBeNull()
+  expect(JSON.parse(readFileSync(join(dir, 'rounds/1/round.json'), 'utf8'))).toMatchObject({ previousRound: 0, round: 1, origin: { jobId: review.id } })
+})
+
+test('owner pilot adoption preserves original request and package, starts same-candidate verification only once', async () => {
+  const f = fixture(); await f.factory.start({ title: 'Legacy', instruction: 'Original manual publication policy', criteria: ['Original acceptance'] }, f.human)
+  const a = f.factory.store.active()!; const candidateSha = 'a'.repeat(40)
+  f.factory.store.candidate(a.id, candidateSha); f.factory.store.transition(a.id, 'merge', 'Malformed legacy review')
+  const request = readFileSync(join(f.root, 'attempts', a.id, 'request.json'), 'utf8')
+  const input = { attemptId: a.id, ownerId: f.cfg.ownerId, candidateSha, packageHash: 'f'.repeat(64), instruction: 'Automatic PR; human merge', criteria: [{ id: 'C1', description: 'Automatic PR; human merge' }], origin: { kind: 'owner-amendment', ownerId: f.cfg.ownerId, reason: 'Supersedes manual publication prohibition', source: 'owner request', at: 1 } }
+  expect(() => f.factory.store.adoptPilot({ ...input, ownerId: 'outsider' })).toThrow('requires')
+  expect(() => f.factory.store.adoptPilot(input)).toThrow('requires')
+  expect(f.factory.store.get(a.id)).toMatchObject({ round: 0, stage: 'merge' })
+  f.factory.store.publicationPr(a.id, 7); f.factory.store.adoptPilot(input)
+  expect(f.factory.store.get(a.id)).toMatchObject({ round: 1, stage: 'verify', candidateSha, packageHash: input.packageHash, instruction: input.instruction, criteria: input.criteria, pr: 7 })
+  expect(f.factory.store.round(a.id, 0)).toMatchObject({ instruction: a.instruction, packageHash: a.packageHash, candidateSha })
+  expect(f.factory.store.jobs(a.id)).toHaveLength(0)
+  expect(readFileSync(join(f.root, 'attempts', a.id, 'request.json'), 'utf8')).toBe(request)
+  expect(() => f.factory.store.adoptPilot(input)).toThrow('requires')
+})
+
+test('reserved round0 helper restarts with its original instructions and no second helper request', async () => {
+  let waiting = true; const requests: Parameters<Ports['launch']>[0][] = []
+  const f = fixture({ launch: async input => { requests.push(input); return waiting ? { waiting: 'Native agents are paused' } : { id: input.requestId } } })
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'build')
+  const build = f.factory.store.newJob(a.id, 'build'); f.factory.store.launched(build.id, 'execution')
+  const turn = f.factory.bind(build.id, f.cfg.executorAgentId, 'build-message')!
+  const context = turn.context('build'); turn.delivered(context, nativeProfile)
+  await turn.call('factory_delegate', { instruction: 'Inspect ONLY the authentication caller' })
+  await f.factory.completed(build.id, { id: 'build-message', author: { kind: 'agent', id: f.cfg.executorAgentId }, run: { status: 'done' }, text: 'Waiting for helper', usage: [] })
+  f.factory.close(); waiting = false
+  const recovered = new Factory(f.root, f.cfg, { ...testPorts(f.root), launch: async input => { requests.push(input); return { id: input.requestId } }, createTask: async () => { throw new Error('Cannot create') }, task: async () => { throw new Error('Cannot create') }, stop: () => {}, completeTask: async () => {}, comment: async () => {} }); cleanups.push(() => recovered.close())
+  await recovered.tick()
+  expect(requests).toHaveLength(2)
+  expect(requests[1]).toEqual(requests[0]); expect(requests[1]?.instructions).toBe('Inspect ONLY the authentication caller')
+  expect(recovered.store.jobs(a.id).filter(j => j.role === 'helper')).toHaveLength(1)
+})
+
+test('pause between helper completion and continuation resumes once with durable helper findings', async () => {
+  let paused = false
+  const f = fixture({ paused: () => paused })
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'build')
+  const build = f.factory.store.newJob(a.id, 'build'); f.factory.store.launched(build.id, 'build')
+  const turn = f.factory.bind(build.id, f.cfg.executorAgentId, 'build-message')!; turn.delivered(turn.context('build'), nativeProfile)
+  await turn.call('factory_delegate', { instruction: 'Explore' })
+  await f.factory.completed(build.id, { id: 'build-message', author: { kind: 'agent', id: f.cfg.executorAgentId }, run: { status: 'done' }, text: 'Waiting', usage: [] })
+  const helper = f.factory.store.jobs(a.id).find(j => j.role === 'helper')!
+  const child = f.factory.bind(helper.id, f.cfg.helperAgentId, 'helper-message')!; child.delivered(child.context('helper'), nativeProfile)
+  paused = true
+  await f.factory.completed(helper.id, { id: 'helper-message', author: { kind: 'agent', id: f.cfg.helperAgentId }, run: { status: 'done' }, text: 'Durable helper finding', usage: [] })
+  expect(f.launched).toHaveLength(1)
+  paused = false; await f.factory.tick(); await f.factory.tick()
+  expect(f.launched).toHaveLength(2); expect(f.launched[1]?.instructions).toContain('Durable helper finding')
+})
+
+test('delegation while paused durably queues the helper and clears waiting after resume', async () => {
+  let paused = false
+  const f = fixture({ paused: () => paused })
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'build')
+  const build = f.factory.store.newJob(a.id, 'build'); f.factory.store.launched(build.id, 'build')
+  const turn = f.factory.bind(build.id, f.cfg.executorAgentId, 'build-message')!; turn.delivered(turn.context('build'), nativeProfile)
+  paused = true
+  expect(await turn.call('factory_delegate', { instruction: 'Inspect authentication callers' })).toContain('queued')
+  const helper = f.factory.store.jobs(a.id).find(j => j.role === 'helper')!
+  expect(helper).toMatchObject({ state: 'reserved', instructions: 'Inspect authentication callers' })
+  expect(f.launched).toHaveLength(0)
+  await f.factory.completed(build.id, { id: 'build-message', author: { kind: 'agent', id: f.cfg.executorAgentId }, run: { status: 'done' }, text: 'Waiting', usage: [] })
+  expect(f.factory.store.get(a.id).waiting).toContain('paused')
+  paused = false; await f.factory.tick(); await f.factory.tick()
+  expect(f.launched).toHaveLength(1); expect(f.launched[0]?.requestId).toBe(helper.id)
+  expect(f.factory.store.get(a.id)).toMatchObject({ waiting: null, blocked: null, stage: 'build' })
 })

@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
@@ -61,7 +62,7 @@ async function setup(run: (turn: Turn) => AsyncIterable<EngineEvent>, packagePat
     const execution = runner.startTask({ source: store.source()!, detail, agent: db.agent(cfg.executorAgentId)!, conversation: db.conversation(`dm-${cfg.executorAgentId}`)!, requester: db.owner(), role: 'executor', requestId: job.id })
     factory.store.launched(job.id, execution.id); return job
   }
-  return { dir, root, db, cfg, factory, runner, attempt, launchBuild, fallbackCalls: () => fallbackCalls }
+  return { dir, root, db, cfg, factory, runner, tasks, taskStore: store, attempt, launchBuild, fallbackCalls: () => fallbackCalls }
 }
 const done = (text: string): EngineEvent => ({ type: 'done', text, usage: { inputTokens: 10, cacheReadTokens: 2, outputTokens: 3 } })
 test.each(['build-first', 'helper-first'])('native queue completes readonly child and continuation (%s); exact hooks reach provider', async ordering => {
@@ -200,4 +201,43 @@ test('a native queue bind refusal fails visibly and releases accounting without 
   expect(f.factory.store.get(f.attempt.id).blocked).toContain('unassigned before bind')
   expect(comments.some(text => text.includes('unassigned before bind'))).toBe(true)
   expect(f.db.taskExecution(message.conversationId, message.threadId)?.state).toBe('started')
+})
+
+
+test.each(['text', 'error', 'legacy'] as const)('factory completion consumes designated answer: %s', async kind => {
+  const f = await setup(async function* () {
+    yield { type: 'text', delta: '{"approved":' }
+    yield { type: 'done', text: 'authoritative aggregate', usage: { inputTokens: 10, cacheReadTokens: 2, outputTokens: 3 },
+      ...(kind === 'legacy' ? {} : { finalAnswer: kind === 'text' ? { kind: 'text', text: '{"approved":true}' } : { kind: 'error', message: 'ambiguous final answer' } }) }
+  })
+  const job = await f.launchBuild(); await f.runner.idle()
+  const settled = f.factory.store.job(job.id)!
+  const message = f.db.message(settled.messageId!)!
+  expect(message.text).toBe(kind === 'text' ? '{"approved":true}' : '{"approved":')
+  expect(message.run?.status).toBe(kind === 'error' ? 'failed' : 'done')
+  const artifact = JSON.parse(readFileSync(join(f.root, 'attempts', f.attempt.id, `message-${message.id}.json`), 'utf8'))
+  expect(artifact.text).toBe(message.text)
+  expect(artifact.run.status).toBe(message.run?.status)
+  if (kind === 'error') expect(message.run?.error).toContain('ambiguous final answer')
+})
+
+
+test('native startTask request replay returns the original execution in every persisted state without another provider turn', async () => {
+  let calls = 0
+  const f = await setup(async function* () { calls++; yield done('complete') })
+  const job = await f.launchBuild(); await f.runner.idle()
+  const message = f.db.message(f.factory.store.job(job.id)!.messageId!)!
+  const original = f.db.taskExecution(message.conversationId, message.threadId)!
+  const detail = await f.tasks.detail(taskFixture.sourceId, f.attempt.taskId)
+  const input = { source: f.taskStore.source()!, detail, agent: f.db.agent(f.cfg.executorAgentId)!, conversation: f.db.conversation(`dm-${f.cfg.executorAgentId}`)!, requester: f.db.owner(), role: 'executor' as const, requestId: job.id }
+  const count = f.db.messages().length
+  const database = new DatabaseSync(join(f.dir, 'native.sqlite'))
+  try {
+    for (const state of ['queued', 'started', 'failed']) {
+      database.prepare('UPDATE task_executions SET state=? WHERE id=?').run(state, original.id)
+      expect(f.runner.startTask(input)).toMatchObject({ id: original.id, rootMessageId: original.rootMessageId, state })
+      await f.runner.idle()
+    }
+  } finally { database.close() }
+  expect(calls).toBe(1); expect(f.db.messages()).toHaveLength(count)
 })

@@ -7,9 +7,9 @@ export type Stage = 'prepare' | 'build' | 'verify' | 'review' | 'merge' | 'compl
 export type Role = 'build' | 'helper' | 'review'
 export interface Criterion { id: string; description: string }
 export interface Request { version: 1; id: string; taskId: string; requesterId: string; title: string; instruction: string; humanPrompt: string; criteria: Criterion[]; createdAt: number }
-export interface Attempt extends Request { requestKey: string; stage: Stage; blocked: string | null; waiting: string | null; publishAuthorized: boolean; packageHash: string; candidateSha: string | null; helperRequested: boolean }
+export interface Attempt extends Request { round: number; pr: number | null; requestKey: string; stage: Stage; blocked: string | null; waiting: string | null; publishAuthorized: boolean; packageHash: string; candidateSha: string | null; helperRequested: boolean }
 export interface Profile { modelId: string; model: string; engine: EngineId; effort: Effort }
-export interface Job { id: string; attemptId: string; role: Role; state: 'reserved' | 'running' | 'done' | 'failed'; messageId: string | null; executionId: string | null; report: string; skillsRead: string[]; profile: Profile | null }
+export interface Job { id: string; attemptId: string; role: Role; round: number; assessment: string | null; reconciled: boolean; instructions: string; state: 'reserved' | 'running' | 'done' | 'failed'; messageId: string | null; executionId: string | null; report: string; skillsRead: string[]; profile: Profile | null }
 export interface Config {
   version: 2; enabled: boolean; ownerId: string; projectId: string; intakeAgentId: string; executorAgentId: string; reviewerAgentId: string; helperAgentId: string
   publication: { repository: { id: number; fullName: string }; base: string; adoptAttempts: { attemptId: string; candidateSha: string }[] }; packageHash: string; operationsPath: string; container: string; workerHostRoot: string; workerControllerRoot: string
@@ -18,12 +18,13 @@ export interface Config {
 export interface Usage { id: string; messageId: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; ms: number; apiCostUsd?: number }
 export interface Completion { id: string; author: { kind: 'agent'; id: string }; text: string; run: { status: string; error?: string; errorDetail?: string }; usage: Usage[] }
 export interface Ports {
+  paused?(): boolean
   assertSkills(agentId: string): void
   readSkill(agentId: string, args: Record<string, unknown>): { content: string; path: string }
   publish(input: PublishInput): Promise<Publication>
   createTask(input: { title: string; description: string; projectId: string }): Promise<{ id: string }>
   task(id: string): Promise<{ id: string; title: string; description: string; projectId: string }>
-  launch(input: { requestId: string; taskId: string; requesterId: string; agentId: string; role: 'executor' | 'reviewer'; instructions: string }): Promise<{ id: string }>
+  launch(input: { requestId: string; taskId: string; requesterId: string; agentId: string; role: 'executor' | 'reviewer'; instructions: string }): Promise<{ id: string } | { waiting: string }>
   stop(messageId: string): void
   completeTask(taskId: string): Promise<void>
   comment(taskId: string, body: string): Promise<void>
@@ -60,3 +61,6 @@ export function config(value: unknown): Config {
   const publication = { repository: { id: repository.id, fullName: repository.fullName }, base: p.base, adoptAttempts: p.adoptAttempts.map(value => { const a = object(value); return { attemptId: id(a.attemptId), candidateSha: sha(a.candidateSha) } }) }
   return { version: 2, enabled: v.enabled, ownerId: string(v.ownerId), projectId: id(v.projectId), intakeAgentId: id(v.intakeAgentId), executorAgentId, reviewerAgentId, helperAgentId, publication, packageHash: hash, operationsPath: string(v.operationsPath), container: string(v.container), workerHostRoot: string(v.workerHostRoot), workerControllerRoot: string(v.workerControllerRoot), verification: v.verification.map(strings), verificationFiles, requiredChecks: checks, humanMergeLogin: string(v.humanMergeLogin) }
 }
+
+export interface Round { attemptId: string; round: number; parentSha: string | null; previousRound: number | null; packageHash: string; criteria: Criterion[]; instruction: string; origin: Record<string, unknown>; candidateSha: string | null }
+export type Assessment = { decision: 'approved'; review: Record<string, unknown> } | { decision: 'rejected'; review: Record<string, unknown> } | { decision: 'invalid'; reason: string }

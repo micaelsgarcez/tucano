@@ -34,9 +34,9 @@ test('real owner-to-Leo adapter creates once, dispatches native task, records re
   const publish = vi.spyOn(Publisher.prototype, 'publish').mockImplementation(testPorts(root).publish)
   const cfg = factoryConfig(root, db.ownerId())
   cfg.operationsPath = join(root, 'operations.py')
-  writeFileSync(cfg.operationsPath, `import pathlib,json,sys\np=pathlib.Path(sys.argv[2])\nif sys.argv[1]=='export':\n (p/'candidate.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','baseSha':'${'b'.repeat(40)}'}))\n (p/'candidate.patch').write_text('candidate patch')\nif sys.argv[1]=='verify': (p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))\n`)
+  writeFileSync(cfg.operationsPath, `import pathlib,json,sys\np=pathlib.Path(sys.argv[2])\nif sys.argv[1]=='export':\n (p/'candidate.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','baseSha':'${'b'.repeat(40)}'}))\n (p/'candidate.bundle').write_bytes(b'bundle')\n (p/'candidate.patch').write_text('candidate patch')\nif sys.argv[1]=='verify': (p/'verify.json').write_text(json.dumps({'candidateSha':'${'a'.repeat(40)}','passed':True}))\n`)
   writeFileSync(join(root, 'config.json'), JSON.stringify(cfg))
-  writeFileSync(join(root, 'publication.py'), '')
+  writeFileSync(join(root, 'publication.py'), `import json,pathlib,sys\np=pathlib.Path(sys.argv[2])\nif sys.argv[1]=='assess': (p/('assessment-'+sys.argv[5]+'.json')).write_text(json.dumps({'decision':'approved','review':{}}))\n`)
   const gateway = new Gateway(); await gateway.start()
   for (const id of [cfg.intakeAgentId, cfg.executorAgentId, cfg.helperAgentId, cfg.reviewerAgentId]) {
     const agent: Agent = { id, name: id, handle: id, role: '', color: 'sky', instructions: '', modelId: 'gpt-5.6-luna', effort: 'medium', limit: 1_000_000, used: 0, grants: {}, memory: 'auto', computer: false, archived: false }
