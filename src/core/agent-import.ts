@@ -412,7 +412,7 @@ export interface ImportResult {
 export function applyForeignTeam(db: Db, team: ForeignTeam, opts: { defaultLimit: number; defaultModel: string; works?: (modelId: string) => boolean }): ImportResult {
   const added = { agents: [] as string[], skills: 0, routines: 0, memories: [] as Memory[], same: [] as string[] }
   const left: string[] = [...team.notes]
-  const skillsBefore = new Set(db.skills().filter((k) => k.state === 'active').map((k) => k.name))
+  const skillsBefore = new Set(db.skills().filter((k) => k.state === 'active' || k.pin).map((k) => k.name))
   const createdSkills = new Map<string, string>() // name → id, made by this import
   const byKey = new Map<string, string>() // the file's agent key → the agent here
 

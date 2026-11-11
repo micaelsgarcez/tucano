@@ -34,20 +34,21 @@ describe("Codex's own catalog", () => {
 
   it("keeps the app's own ids for the models agents already use, and names new ones", () => {
     expect(codexValue('gpt-5.6-luna')).toBe('gpt-5.6-luna')
-    expect(codexValue('gpt-6-astra')).toBe('codex:gpt-6-astra')
-    rememberModels([{ id: 'gpt-6-astra', engine: 'codex', label: 'GPT-6-Astra', hint: 'Frontier' }])
-    expect(modelInfo('codex:gpt-6-astra')).toMatchObject({ id: 'gpt-6-astra', engine: 'codex', label: 'GPT-6-Astra' })
+    expect(codexValue('gpt-6-astra')).toBe('gpt-6-astra')
+    expect(codexValue('future-model')).toBe('codex:future-model')
+    rememberModels([{ id: 'future-model', engine: 'codex', label: 'Future Model', hint: 'Frontier' }])
+    expect(modelInfo('codex:future-model')).toMatchObject({ id: 'future-model', engine: 'codex', label: 'Future Model' })
   })
 
   it("gives Tuca the catalog's models instead of the app's Codex list", () => {
     const off = { installed: false, loggedIn: false }
     const s = { engines: { claude: off, codex: { installed: true, loggedIn: true, route: 'plan' }, opencode: off, pi: off, antigravity: off, cursor: off } } as unknown as Pick<Settings, 'engines'>
     expect(availableModels(s, { codex: ['gpt-6-astra', 'gpt-5.6-luna'] })).toEqual([
-      { id: 'codex:gpt-6-astra', label: 'Codex · GPT-6-Astra' },
+      { id: 'gpt-6-astra', label: 'Codex · GPT-6 Astra' },
       { id: 'gpt-5.6-luna', label: 'Codex · GPT-5.6 Luna' }
     ])
     // No catalog (an old Codex): the app's list, as before.
-    expect(availableModels(s).map((m) => m.id)).toEqual(['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol'])
+    expect(availableModels(s).map((m) => m.id)).toEqual(['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra'])
   })
 })
 

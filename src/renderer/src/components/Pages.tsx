@@ -1722,8 +1722,8 @@ function AgentSkills({ agentId, name }: { agentId: string; name: string }): Reac
   const skills = useStore((s) => s.skills.filter((k) => k.state === 'active'))
   const everyone = useStore((s) => s.agents.filter(isTeam).map((a) => a.id))
   const toggle = (k: Skill, on: boolean): void => {
-    let agents = on ? (k.agents.length === 0 ? [] : [...k.agents, agentId]) : (k.agents.length === 0 ? everyone : k.agents).filter((x) => x !== agentId)
-    if (on && agents.length >= everyone.length && everyone.every((id) => agents.includes(id))) agents = [] // everyone again
+    let agents = k.pin ? (on ? [...k.agents, agentId] : k.agents.filter((x) => x !== agentId)) : on ? (k.agents.length === 0 ? [] : [...k.agents, agentId]) : (k.agents.length === 0 ? everyone : k.agents).filter((x) => x !== agentId)
+    if (!k.pin && on && agents.length >= everyone.length && everyone.every((id) => agents.includes(id))) agents = [] // everyone again
     void saveSkill({ id: k.id, name: k.name, description: k.description, body: k.body, agents, source: k.source })
   }
   return (
@@ -1739,14 +1739,15 @@ function AgentSkills({ agentId, name }: { agentId: string; name: string }): Reac
         <div className="checks checks--skills">
           {skills.map((k) => {
             const on = skillApplies(k, agentId)
-            const only = on && k.agents.length === 1
+            const only = !k.pin && on && k.agents.length === 1
             return (
               <label key={k.id} className="check check--skill" title={only ? L(`Só ${name || 'este agente'} usa: pra ninguém usar, arquive em Skills`, `Only ${name || 'this agent'} uses it: to have no one use it, archive it in Skills`) : undefined}>
                 <input type="checkbox" checked={on} disabled={only} onChange={(e) => toggle(k, e.target.checked)} />
                 <span>
                   <strong>{k.name}</strong>
+                  {k.pin && <span className="tag" title={k.pin.packageHash}>{L('Pacote fixado', 'Pinned package')} · {k.pin.revision.slice(0, 8)}</span>}
                   {k.source && <span className="tag">{L('do seu', 'from your')} {k.source.includes('/.codex/') ? 'Codex' : 'Claude Code'}</span>}
-                  <span className="muted small">{k.agents.length === 0 ? L('todos os agentes', 'all agents') : `${k.agents.length} ${k.agents.length === 1 ? L('agente', 'agent') : L('agentes', 'agents')}`}</span>
+                  <span className="muted small">{!k.pin && k.agents.length === 0 ? L('todos os agentes', 'all agents') : `${k.agents.length} ${k.agents.length === 1 ? L('agente', 'agent') : L('agentes', 'agents')}`}</span>
                   <span className="small skill__desc">{k.description}</span>
                 </span>
               </label>

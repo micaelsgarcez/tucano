@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { examples } from 'open-bot-avatar'
 import type { Agent } from '../src/shared/types'
+import { Skills } from '../src/core/skills'
 import { Db } from '../src/core/db'
 import { claudeParser } from '../src/core/engines/claude'
 import { report } from '../src/core/report'
@@ -42,6 +43,22 @@ describe('the team as a file', () => {
     expect(b.routines()[0]).toMatchObject({ enabled: false, trigger: { kind: 'poll', connectorId: 'lin2' } })
     expect(importTeam(b, md, 2_000_000)).toBe('Nada novo: tudo já existia aqui.')
     expect(() => importTeam(b, '# outro arquivo', 1)).toThrow('não é um time exportado')
+  })
+
+  it('omits package pins from exports and reserves their names when archived during import', () => {
+    const target = fresh()
+    const skills = new Skills({ db: target, emit: () => {} })
+    skills.registerPinned([{ name: 'pstack', description: 'Pinned workflow', pin: { packageHash: 'hash', revision: 'rev', root: 'pstack', entry: 'SKILL.md' } }], [])
+    expect(exportTeam(target)).not.toContain('pstack')
+    const pinned = target.skills()[0]!
+    skills.archive(pinned.id, true)
+    const source = fresh()
+    source.saveSkill({ id: 'authored', name: 'pstack', description: 'Imported', body: 'Unverified', agents: [], state: 'active', createdAt: 1, updatedAt: 1 })
+    importTeam(target, exportTeam(source), 1000)
+    expect(target.skills()).toHaveLength(1)
+    expect(target.skill(pinned.id)).toMatchObject({ state: 'archived', body: '', pin: pinned.pin })
+    skills.archive(pinned.id, false)
+    expect(target.skill(pinned.id)?.state).toBe('active')
   })
 
   it('imports a long team skill whole and reports the excess over the recommendation', () => {

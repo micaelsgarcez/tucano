@@ -1342,7 +1342,7 @@ const emitPeople = (): void => emit({ type: 'people', people: db.people(), forme
 
 const taskStore = new TaskStore(join(dataDir, 'tasks.sqlite'))
 const tasks = new Tasks(db, taskStore)
-factory = openFactory({ dataDir, db, tasks, runner, emitConversation: id => emitConversations([id]) })
+factory = openFactory({ dataDir, db, tasks, runner, skills, connectors, emitConversation: id => emitConversations([id]) })
 
 const api: Handlers = {
   tasksBoardData: ({ sourceId }) => tasks.boardData(sourceId),

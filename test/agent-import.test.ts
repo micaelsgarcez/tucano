@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateRawSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
+import { Skills } from '../src/core/skills'
 import { Db } from '../src/core/db'
 import { applyForeignTeam, hueColor, IMPORT_CAPS, openBotSchedule, readForeignZip, tucanoSchedule } from '../src/core/agent-import'
 import { extractZip, zipFromBuffer, zipFromFile } from '../src/core/zip'
@@ -266,6 +267,20 @@ describe('importing agents from Grok Bot, through our skill', () => {
     'agents/ledger/picture.png': PNG,
     'agents/ledger/skills/reconcile/SKILL.md': '---\nname: reconcile\ndescription: When reconciling\n---\n\nKeep it short.\n',
     'agents/ledger/skills/reconcile/template.txt': 'x'
+  })
+
+  it('renames imported skills whose names belong to archived package pins', () => {
+    const db = fresh()
+    const skills = new Skills({ db, emit: () => {} })
+    skills.registerPinned([{ name: 'reconcile', description: 'Pinned workflow', pin: { packageHash: 'hash', revision: 'rev', root: 'pstack', entry: 'SKILL.md' } }], [])
+    const pinned = db.skills()[0]!
+    skills.archive(pinned.id, true)
+    applyForeignTeam(db, readForeignZip(zipFromBuffer(zip(files()))), opts)
+    expect(db.skill(pinned.id)).toMatchObject({ state: 'archived', body: '', agents: [], pin: pinned.pin })
+    expect(db.skills().find((k) => k.name === 'reconcile-ledger')).toMatchObject({ body: 'Keep it short.', state: 'active', pin: undefined })
+    expect(db.skills().filter((k) => k.name === 'reconcile')).toHaveLength(1)
+    skills.archive(pinned.id, false)
+    expect(db.skill(pinned.id)?.state).toBe('active')
   })
 
   it('imports long skills whole and reports how far they exceed the recommendation', () => {

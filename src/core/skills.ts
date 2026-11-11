@@ -7,12 +7,12 @@ import { randomUUID } from 'node:crypto'
 import { L } from '../shared/lang'
 import { MAX_SKILL_BODY_LENGTH, skillLengthNote, tooLongSkill } from '../shared/skills'
 import type { CoreEvent } from '../shared/rpc'
-import { skillApplies, type Agent, type Skill, type SkillInput } from '../shared/types'
+import { skillApplies, type Agent, type Skill, type SkillInput, type SkillPin } from '../shared/types'
 import type { Db } from './db'
 import type { ToolDef } from './gateway'
 import { frontmatter, readLinked } from './local-skills'
 import { readdirSync, readFileSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, posix } from 'node:path'
 
 const MAX_PENDING = 5 // per agent, so an agent can't flood the review
 
@@ -98,7 +98,35 @@ export const skillName = (s: string): string =>
 
 type Outcome = { reply: string; error?: boolean; skill?: Skill }
 
+export type PinnedSkillEntry = { name: string; description: string; pin: SkillPin }
+
+export function pinnedSkillPath(pin: SkillPin, file?: string): string {
+  const relative = file ?? pin.entry
+  const path = posix.normalize(posix.join(pin.root, relative))
+  if (posix.isAbsolute(relative) || relative.includes('\\') || !path.startsWith(`${pin.root}/`)) throw new Error('Pinned skill file is outside its bundle')
+  return path
+}
+
 export class Skills {
+  private pinnedReader?: (pin: SkillPin, path: string) => string
+
+  setPinnedReader(reader: ((pin: SkillPin, path: string) => string) | undefined): void {
+    this.pinnedReader = reader
+  }
+
+  registerPinned(entries: PinnedSkillEntry[], agentIds: string[]): void {
+    for (const entry of entries) {
+      const matching = this.deps.db.skills().filter((s) => s.name === entry.name)
+      const previous = matching.find((s) => s.pin) ?? matching[0]
+      if (previous && (!previous.pin || previous.pin.root !== entry.pin.root)) throw new Error(exists(entry.name))
+      if (previous?.pin && previous.description === entry.description && previous.pin.packageHash === entry.pin.packageHash && previous.pin.revision === entry.pin.revision && previous.pin.root === entry.pin.root && previous.pin.entry === entry.pin.entry) continue
+      const at = this.now()
+      this.store(previous
+        ? { ...previous, pin: entry.pin, description: entry.description, updatedAt: at }
+        : { id: randomUUID(), ...entry, body: '', agents: [...new Set(agentIds)], state: 'active', createdAt: at, updatedAt: at })
+    }
+  }
+
   constructor(private deps: { db: Db; emit: (e: CoreEvent) => void; notify?: (title: string, body: string) => void; now?: () => number }) {}
 
   private now(): number {
@@ -127,16 +155,18 @@ export class Skills {
 
   // Me, from the Skills page: takes effect right away, keeping the version before.
   save(input: SkillInput): Skill {
+    if ('pin' in input) throw new Error('Pinned provenance is managed by the package')
     const name = skillName(input.name)
     const prev = input.id ? this.deps.db.skill(input.id) : undefined
     // A linked skill is edited in Claude Code or Codex; here only who uses it changes.
-    if (prev?.source) return this.store({ ...prev, agents: [...new Set(input.agents)], updatedAt: this.now() })
+    if (prev?.source || prev?.pin) return this.store({ ...prev, agents: [...new Set(input.agents)], updatedAt: this.now() })
     const description = input.description.trim()
     const body = input.body.trim()
     if (!name) throw new Error(L('Dê um nome pra skill.', 'Give the skill a name.'))
     if (!description) throw new Error(L('Diga quando usar.', 'Say when to use it.'))
     if (!body) throw new Error(L('Escreva a receita.', 'Write the recipe.'))
     if (body.length > MAX_SKILL_BODY_LENGTH) throw new Error(tooLongSkill())
+    if (this.deps.db.skills().some((s) => s.pin && s.name === name && s.id !== input.id)) throw new Error(exists(name))
     if (this.active(name, input.id)) throw new Error(exists(name))
     if (prev && prev.state === 'active' && (prev.name !== name || prev.description !== description || prev.body !== body)) this.keep(prev, 'me')
     const at = this.now()
@@ -160,6 +190,7 @@ export class Skills {
     const fm = frontmatter(text)
     const name = skillName(fm.name || basename(dirname(source)) || '')
     if (!name) throw new Error(L('Essa skill não tem nome.', "That skill has no name."))
+    if (this.deps.db.skills().some((s) => s.pin && s.name === name)) throw new Error(exists(name))
     if (this.active(name)) throw new Error(exists(name))
     if (fm.body.trim().length > MAX_SKILL_BODY_LENGTH) throw new Error(tooLongSkill())
     const at = this.now()
@@ -171,6 +202,15 @@ export class Skills {
     const name = skillName(String(args['nome'] ?? ''))
     const k = this.forAgent(agent.id).find((s) => s.name === name)
     if (!k) return { reply: L(`Você não tem uma skill chamada "${name}".`, `You don't have a skill called "${name}".`), error: true }
+    if (k.pin) {
+      try {
+        if (!this.pinnedReader) throw new Error('Pinned package unavailable')
+        const file = typeof args['arquivo'] === 'string' && args['arquivo'].trim() ? args['arquivo'].trim() : undefined
+        return { reply: this.pinnedReader(k.pin, pinnedSkillPath(k.pin, file)), skill: k }
+      } catch (error) {
+        return { reply: error instanceof Error ? error.message : String(error), error: true }
+      }
+    }
     if (!k.source) return { reply: `# ${k.name}\n${L('Quando usar', 'When to use')}: ${k.description}\n\n${k.body}`, skill: k }
     const file = typeof args['arquivo'] === 'string' && args['arquivo'].trim() ? args['arquivo'].trim() : undefined
     try {
@@ -198,6 +238,7 @@ export class Skills {
     if (!name || !description || !body) return { reply: L('Faltou nome, quando_usar ou receita.', 'Missing nome, quando_usar or receita.'), error: true }
     if (body.length > MAX_SKILL_BODY_LENGTH) return { reply: tooLongSkill(), error: true }
     const all = this.deps.db.skills()
+    if (all.some((s) => s.pin && s.name === name)) return { reply: 'Pinned skills are managed by the package', error: true }
     if (all.filter((s) => s.state === 'pending' && s.proposedBy === agent.id).length >= MAX_PENDING)
       return { reply: L(`Você já tem ${MAX_PENDING} propostas esperando revisão. Espere o usuário decidir.`, `You already have ${MAX_PENDING} proposals waiting for review. Wait for the user to decide.`), error: true }
     const current = this.active(name)
@@ -247,6 +288,7 @@ export class Skills {
     if (p?.state !== 'pending') return undefined
     if (!approve) return void this.drop(id)
     const target = p.replaces ? this.deps.db.skill(p.replaces) : undefined
+    if (target?.pin || this.deps.db.skills().some((s) => s.pin && s.name === p.name)) throw new Error('Pinned skills are managed by the package')
     if (target?.state === 'active') {
       this.keep(target, p.proposedBy ?? 'me') // replaced by that agent's proposal
       this.drop(id)
@@ -259,6 +301,7 @@ export class Skills {
   // Back to how it was in that version; the current one is kept, so this can be undone too.
   restore(skillId: string, versionId: number): Skill | undefined {
     const k = this.deps.db.skill(skillId)
+    if (k?.pin) throw new Error('Pinned skills are managed by the package')
     const v = this.deps.db.skillVersions(skillId).find((x) => x.id === versionId)
     if (!k || !v) return undefined
     this.keep(k, 'me')
@@ -273,6 +316,7 @@ export class Skills {
   }
 
   remove(id: string): void {
+    if (this.deps.db.skill(id)?.pin) throw new Error('Archive pinned skills to disable them')
     this.drop(id)
   }
 }
