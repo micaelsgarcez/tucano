@@ -5,12 +5,12 @@ import { STAGE_GATES } from '../../src/factory/contract'
 import type { Config, Ports, Profile } from '../../src/factory/types'
 export function packageFixture(root: string): string {
   const files: Record<string, string> = {
-    'stages.yaml': JSON.stringify({ version: 2, publication: 'controller', stages: STAGE_GATES }),
+    'stages.yaml': JSON.stringify({ version: 3, publication: 'controller', stages: STAGE_GATES, correction: { from: 'review', to: 'build', on: 'review.rejected' } }),
     'HEADLESS.md': 'Only the factory tools are available. Helpers are readonly.',
     'pstack/skills/poteto-mode/SKILL.md': 'Read first, implement and verify.',
     'ponytail/skills/ponytail/SKILL.md': 'Ponytail policy',
     'pstack/skills/poteto-mode/playbooks/feature.md': 'Feature playbook',
-    'ponytail/hooks/ponytail-activate.js': `const fs=require('node:fs');fs.writeFileSync(process.env.PLUGIN_DATA+'/.ponytail-active','full');process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'EXACT PINNED HOOK CONTEXT'}}))`,
+    'ponytail/hooks/ponytail-activate.js': `const fs=require('node:fs');fs.writeFileSync(process.env.PLUGIN_DATA+'/.ponytail-active',process.env.PONYTAIL_DEFAULT_MODE);process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'EXACT PINNED HOOK CONTEXT'}}))`,
     'ponytail/hooks/ponytail-mode-tracker.js': '',
     'ponytail/hooks/ponytail-subagent.js': `process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SubagentStart',additionalContext:'EXACT PINNED CHILD CONTEXT'}}))`
   }

@@ -27,10 +27,31 @@ describe('Codex app-server stream', () => {
     expect(done).toMatchObject({ type: 'done', usage: { inputTokens: 21916, cacheReadTokens: 6016, outputTokens: 422 }, context: 7971 + 259 })
     expect(textOf(events)).toBe(done?.type === 'done' ? done.text : '')
     expect(textOf(events)).toMatch(/^pong-42; tools: /)
+    expect(done).toMatchObject({ finalAnswer: { kind: 'text', text: textOf(events) } })
     const progress = events.flatMap((e) => (e.type === 'progress' ? [e.tokens] : []))
     expect(progress).toEqual([6253, 14108, 22338])
     // The rate limits it reports aren't the ones the app shows (those are Claude's): none go out.
     expect(events.some((e) => e.type === 'error' || e.type === 'quota')).toBe(false)
+  })
+
+  it('designates only completed final text and keeps commentary in the display', () => {
+    const events = feed([
+      n('item/completed', { item: { type: 'agentMessage', id: 'a', phase: 'commentary', text: '{"approved":' } }),
+      n('item/started', { item: { type: 'agentMessage', id: 'b', phase: 'final_answer' } }),
+      n('item/agentMessage/delta', { itemId: 'b', delta: '{"approved":false' }),
+      n('item/completed', { item: { type: 'agentMessage', id: 'b', text: '{"approved":true}' } }),
+      n('turn/completed', { turn: { status: 'completed' } })
+    ])
+    expect(textOf(events)).toBe('{"approved":\n\n{"approved":false')
+    expect(events.find(e => e.type === 'done')).toMatchObject({ finalAnswer: { kind: 'text', text: '{"approved":true}' } })
+  })
+
+  it.each(['missing', 'multiple', 'incomplete', 'unknown'])('fails closed for %s phased final answers', kind => {
+    const items = [n('item/completed', { item: { type: 'agentMessage', id: 'a', phase: kind === 'unknown' ? 'future_phase' : 'commentary', text: 'checking' } })]
+    if (kind === 'incomplete') items.push(n('item/started', { item: { type: 'agentMessage', id: 'b', phase: 'final_answer' } }))
+    if (kind === 'multiple') for (const id of ['b', 'c']) items.push(n('item/completed', { item: { type: 'agentMessage', id, phase: 'final_answer', text: '{}' } }))
+    const events = feed([...items, n('turn/completed', { turn: { status: 'completed' } })])
+    expect(events.find(e => e.type === 'done')).toMatchObject({ finalAnswer: { kind: 'error' } })
   })
 
   it("counts only this turn's tokens on a thread that had turns before", () => {
@@ -48,6 +69,7 @@ describe('Codex app-server stream', () => {
       n('turn/completed', { turn: { id: 'u', status: 'completed' } })
     ])
     expect(textOf(events)).toBe('Vou ver.\n\nPronto.')
+    expect(events.find(e => e.type === 'done')).not.toHaveProperty('finalAnswer')
     expect(events.find((e) => e.type === 'done')).toMatchObject({ text: 'Vou ver.\n\nPronto.' })
   })
 

@@ -55,6 +55,7 @@ export function openFactory(deps: { dataDir: string; db: Db; tasks: Tasks; runne
     return publishingAllowed() ? credential : { waiting: 'Publication cancelled or stopped by the operator' }
   })
   const factory = new Factory(root, configured, {
+    paused: () => runner.isPaused(),
     assertSkills,
     readSkill: (agentId, args) => {
       assertSkills(agentId)
@@ -78,8 +79,10 @@ export function openFactory(deps: { dataDir: string; db: Db; tasks: Tasks; runne
     },
     comment: async (taskId, body) => { await tasks.addComment({ sourceId: source.id, taskId, body }) },
     launch: async input => {
+      if (runner.isPaused()) return { waiting: 'Native agents are paused' }
       const person = db.person(input.requesterId); if (!person || person.id !== configured.ownerId) throw new Error('Factory requester unavailable')
       await tasks.assign({ sourceId: source.id, taskId: input.taskId, role: input.role, agentId: input.agentId })
+      if (runner.isPaused()) return { waiting: 'Native agents are paused' }
       return tasks.start({ sourceId: source.id, taskId: input.taskId, role: input.role, requestId: input.requestId }, (taskSource, detail, agent) => {
         let conversation = db.conversations().find(c => c.kind === 'dm' && c.name === agent.id && dmOwner(c, db.ownerId()) === person.id)
         if (!conversation) { const id = randomUUID(); db.createConversation({ id, kind: 'dm', name: agent.id, members: [agent.id], owner: person.id }); deps.emitConversation(id); conversation = db.conversation(id) }

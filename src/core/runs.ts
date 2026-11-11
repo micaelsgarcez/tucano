@@ -22,7 +22,7 @@ import { availableModels, builderGuide, builderSection, draftFrom, helperSection
 import { LER_GUIA, readGuide } from './guide'
 import { pendingAgents, proposalFrom, PROPOSAL_TOOLS, VER_ESTADO, workspaceState } from './tuca-help'
 import type { Db } from './db'
-import type { Engine, TurnImage } from './engines/types'
+import type { Engine, EngineEvent, TurnImage } from './engines/types'
 import { accountDir } from './engines/detect'
 import { outOfQuota } from './engines/cli'
 import { ALWAYS_LOAD, textResult, type Gateway, type Session, type ToolDef } from './gateway'
@@ -393,6 +393,8 @@ export class Runner {
       return (of.agentId !== undefined && agent === of.agentId) || (of.conversationId !== undefined && conversation === of.conversationId)
     })
   }
+
+  isPaused(): boolean { return this.paused }
 
   setPaused(paused: boolean): void {
     this.paused = paused
@@ -2099,7 +2101,7 @@ ${note}`,
     }
 
     let progress = { tokens: 0, cacheRead: 0 }
-    let result: { text: string; usage: Omit<Receipt, 'model' | 'ms'>; context?: number } | null = null
+    let result: Extract<EngineEvent, { type: 'done' }> | null = null
     let error: string | null = null
     let thrown: unknown // what the engine threw, if it did: a bug reads differently from a CLI's own words
 
@@ -2324,6 +2326,8 @@ ${note}`,
         text: msg.text ? `${msg.text} …` : '',
         run: { ...base, ...again, status: 'limit_reached', steps: closeThinking('error', L('Parou no limite de tokens', 'Stopped at the token limit')), error: L('Cheguei no meu limite de tokens deste mês no meio da resposta.', 'I hit my token limit for this month in the middle of the reply.') }
       })
+    } else if (factoryExecution && result?.finalAnswer?.kind === 'error') {
+      save({ run: { ...base, ...again, status: 'failed', steps: closeThinking('error', L('Falhou', 'Failed')), error: result.finalAnswer.message } })
     } else if (result) {
       // Approved or refused before the run ended: nothing is left to wait for.
       const waiting = approval && db.approval(approval.id)?.state === 'pending'
@@ -2331,7 +2335,7 @@ ${note}`,
       if (question) this.asked(agent, msg, question, askedTo, requester, confirming, settings)
       // Streamed text keeps every model call of the turn; the final result may hold only the last one.
       save({
-        text: msg.text.trim() ? msg.text.trim() : result.text.trim() ? result.text : (narration ?? ''), // said it all before its last tool
+        text: factoryExecution && result.finalAnswer?.kind === 'text' ? result.finalAnswer.text : msg.text.trim() ? msg.text.trim() : result.text.trim() ? result.text : (narration ?? ''), // said it all before its last tool
         run: { ...base, status: questions ? 'waiting_input' : waiting ? 'waiting_approval' : 'done', steps: closeThinking('done', L('Respondeu', 'Replied')) }
       })
       // The inbox shows a question's decisions from its message, which has them only now.

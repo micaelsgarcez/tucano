@@ -41,7 +41,7 @@ export type EngineEvent =
   | { type: 'web'; action: 'search' | 'fetch'; detail: string }
   | { type: 'quota'; quota: Quota } // the subscription's usage windows, when the CLI tells
   // `context`: the tokens the last model call of the turn saw, its reply included (how big a kept session is).
-  | { type: 'done'; text: string; usage: Usage; context?: number }
+  | { type: 'done'; text: string; usage: Usage; context?: number; finalAnswer?: { kind: 'text'; text: string } | { kind: 'error'; message: string } }
   | { type: 'error'; message: string }
 
 // A turn's settings without what it says: enough to start its process ahead of time.

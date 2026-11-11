@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { id, object, sha, string } from './types'
 
-export interface PublishInput { attemptDir: string; attemptId: string; candidateSha: string; baseSha: string; title: string; body: string; signal?: AbortSignal }
+export interface PublishInput { attemptDir: string; attemptId: string; candidateSha: string; baseSha: string; title: string; body: string; round?: number; parentSha?: string; expectedHead?: string; expectedPr?: number; allowMerged?: boolean; signal?: AbortSignal }
 export interface PublicationConfig { repository: { id: number; fullName: string }; base: string; requiredChecks: string[] }
 export type Publication = { state: 'waiting' | 'conflict'; reason: string } | {
   state: 'published'; pr: number; url: string; candidateSha: string
@@ -29,6 +29,10 @@ export class Publisher {
     const signal = AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(120_000)])
     try {
       const candidate = sha(input.candidateSha), base = sha(input.baseSha), branch = `factory/${id(input.attemptId)}`
+      const round = input.round ?? 0, parent = sha(input.parentSha ?? base)
+      const expected = input.expectedHead === undefined ? undefined : sha(input.expectedHead)
+      if (!Number.isSafeInteger(round) || round < 0 || ((round > 0 || expected !== undefined) && (expected === undefined || input.expectedPr === undefined)) || (input.expectedPr !== undefined && (!Number.isSafeInteger(input.expectedPr) || input.expectedPr <= 0))) throw new Halt('conflict', 'Invalid publication round or previous publication identity')
+      const artifacts = round === 0 ? input.attemptDir : join(input.attemptDir, 'rounds', String(round))
       const credential = async () => {
         signal.throwIfAborted()
         const c = await this.credentials()
@@ -55,9 +59,9 @@ export class Publisher {
       const repository = object(await api('', 'repository read'))
       if (repository.id !== this.config.repository.id || repository.full_name !== this.config.repository.fullName) throw new Halt('conflict', 'GitHub repository identity mismatch')
       try {
-        const receipt = object(JSON.parse(await readFile(join(input.attemptDir, 'candidate.json'), 'utf8')))
-        const verified = object(JSON.parse(await readFile(join(input.attemptDir, 'verify.json'), 'utf8')))
-        if (receipt.candidateSha !== candidate || receipt.baseSha !== base || verified.candidateSha !== candidate || verified.passed !== true) throw new Error('Mismatch')
+        const receipt = object(JSON.parse(await readFile(join(artifacts, 'candidate.json'), 'utf8')))
+        const verified = object(JSON.parse(await readFile(join(artifacts, 'verify.json'), 'utf8')))
+        if ((receipt.version !== undefined && receipt.version !== 2) || (receipt.version === 2 ? receipt.parentSha !== parent : round !== 0 || parent !== base) || receipt.candidateSha !== candidate || receipt.baseSha !== base || verified.candidateSha !== candidate || verified.passed !== true) throw new Error('Mismatch')
       } catch { throw new Halt('conflict', 'Candidate verification receipt missing, invalid or mismatched') }
       temporary = await mkdtemp(join(tmpdir(), 'factory-publish-'))
       const directory = temporary
@@ -87,8 +91,9 @@ export class Publisher {
       } catch (error) {
         if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw new Halt('conflict', 'Invalid trusted baseline shallow boundary')
       }
-      await git(['fetch', '--no-tags', join(input.attemptDir, 'candidate.bundle'), 'HEAD'])
-      if (await git(['rev-parse', 'FETCH_HEAD']) !== candidate || await git(['show', '-s', '--format=%P', candidate]) !== base) throw new Halt('conflict', 'Bundle commit or parent differs from verified candidate')
+      await git(['fetch', '--no-tags', join(artifacts, 'candidate.bundle'), 'HEAD'])
+      if (await git(['rev-parse', 'FETCH_HEAD']) !== candidate || await git(['show', '-s', '--format=%P', candidate]) !== parent) throw new Halt('conflict', 'Bundle commit or parent differs from verified candidate')
+      if (expected !== undefined && expected !== candidate && parent !== expected) throw new Halt('conflict', 'Candidate is not a single child of the authorized head')
       const list = async (path: string, permission: string, key?: string): Promise<unknown[]> => {
         const all: unknown[] = []
         for (let page = 1; page <= 100; page++) {
@@ -101,24 +106,28 @@ export class Publisher {
       const query = `/pulls?state=all&head=${encodeURIComponent(`micaelsgarcez:${branch}`)}`
       let pulls = await list(query, 'pull requests read')
       if (pulls.length > 1) throw new Halt('conflict', 'Multiple publication pull requests')
-      const readPr = async (number: number) => {
+      const readPr = async (number: number, allowPrevious = false) => {
         const pr = object(await api(`/pulls/${number}`, 'pull requests read')), h = object(pr.head), b = object(pr.base)
-        if (h.sha !== candidate || h.ref !== branch || b.ref !== this.config.base || object(h.repo).id !== this.config.repository.id || object(b.repo).id !== this.config.repository.id) throw new Halt('conflict', 'Pull request head or base differs from candidate')
+        if ((h.sha !== candidate && !(allowPrevious && h.sha === expected)) || h.ref !== branch || b.ref !== this.config.base || object(h.repo).id !== this.config.repository.id || object(b.repo).id !== this.config.repository.id) throw new Halt('conflict', 'Pull request head or base differs from candidate')
+        if (input.expectedPr !== undefined && number !== input.expectedPr) throw new Halt('conflict', 'Established publication PR identity changed')
+        if (pr.merged === true && (h.sha !== candidate || !(input.allowMerged ?? expected === undefined))) throw new Halt('conflict', 'Publication pull request merged before approval')
         if (pr.state !== 'open' && pr.merged !== true) throw new Halt('conflict', 'Publication pull request is closed without merge')
         return pr
       }
-      const existing = pulls.length ? await readPr(integer(object(pulls[0]).number)) : null
+      if (input.expectedPr !== undefined && (pulls.length !== 1 || object(pulls[0]).number !== input.expectedPr)) throw new Halt('conflict', 'Established publication pull request is missing or changed')
+      const existing = pulls.length ? await readPr(integer(object(pulls[0]).number), expected !== undefined) : null
       const refPath = `/git/ref/heads/${branch}`
       const head = async () => { const value = await api(refPath, 'contents read'); return value === null ? null : string(object(object(value).object).sha) }
       let remoteHead = await head()
-      if (remoteHead && remoteHead !== candidate) throw new Halt('conflict', 'Publication branch has a different head')
+      if (existing?.merged === true && remoteHead !== null && remoteHead !== candidate) throw new Halt('conflict', 'Merged publication branch differs from candidate')
+      if (remoteHead && remoteHead !== candidate && remoteHead !== expected) throw new Halt('conflict', 'Publication branch has a different head')
       if (!remoteHead && existing && existing.merged !== true) throw new Halt('conflict', 'Open publication pull request branch is missing')
-      if (!remoteHead && !existing) {
+      if ((!remoteHead && !existing) || (expected !== undefined && remoteHead === expected && expected !== candidate)) {
         token = await credential()
-        try { await git(['push', `--force-with-lease=refs/heads/${branch}:`, this.dependencies.remote ?? `https://github.com/${this.config.repository.fullName}.git`, `${candidate}:refs/heads/${branch}`], token) }
+        try { await git(['push', `--force-with-lease=refs/heads/${branch}:${expected ?? ''}`, this.dependencies.remote ?? `https://github.com/${this.config.repository.fullName}.git`, `${candidate}:refs/heads/${branch}`], token) }
         catch (error) {
           remoteHead = await head()
-          if (remoteHead && remoteHead !== candidate) throw new Halt('conflict', 'Publication branch was concurrently created at a different head')
+          if (remoteHead && remoteHead !== candidate) throw new Halt('conflict', 'Publication branch was concurrently changed to a different head')
           if (remoteHead !== candidate) throw error
         }
       }
