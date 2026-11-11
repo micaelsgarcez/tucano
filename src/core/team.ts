@@ -68,7 +68,7 @@ export function exportTeam(db: Db, by = db.ownerId()): string {
       computer: a.computer,
       grants: Object.fromEntries(Object.entries(a.grants).flatMap(([id, g]) => (g !== 'none' && connectorName(id) ? [[connectorName(id)!, g]] : [])))
     })),
-    skills: db.skills().filter((k) => k.state === 'active').map((k) => ({ name: k.name, description: k.description, body: k.body, agents: k.agents.flatMap((id) => handle(id) ?? []) })),
+    skills: db.skills().filter((k) => k.state === 'active' && !k.pin).map((k) => ({ name: k.name, description: k.description, body: k.body, agents: k.agents.flatMap((id) => handle(id) ?? []) })),
     channels: channels.map((c) => ({ name: c.name, topic: c.topic, members: c.members.flatMap((id) => handle(id) ?? []) })),
     routines: db.routines().flatMap((r) => {
       const agent = handle(r.agentId)
@@ -162,7 +162,7 @@ export function importTeam(db: Db, text: string, defaultLimit: number, by = db.o
   const byHandle = (h: string): string | undefined => db.agents().find((x) => x.handle === h)?.id
 
   for (const k of data.skills ?? []) {
-    if (db.skills().some((x) => x.state === 'active' && x.name === k.name)) continue
+    if (db.skills().some((x) => (x.state === 'active' || x.pin) && x.name === k.name)) continue
     const note = overlongSkillNote(k.name, k.body.length)
     if (note) longSkills.push(note)
     const at = Date.now()

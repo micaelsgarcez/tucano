@@ -958,13 +958,13 @@ export class Runner {
     const factory = this.deps.factory?.()
     const factoryTurn = factory?.bind(agent.id, conv.id, msg.threadId, msg.id)
     const factoryIntake = factory?.intake(agent.id, conv.id, opts.trigger ?? opts.replyTo ?? opts.existing?.run?.replyTo)
-    if (factoryTurn) agent = { ...agent, modelId: factoryTurn.model, effort: factoryTurn.effort, web: false }
+    if (factoryTurn) agent = { ...agent, web: false }
     const model = modelInfo(agent.modelId)
     // The model this reply runs on: the agent's, or its reserve once the main one's subscription is out.
     let modelId = agent.modelId
     let onReserve = false // the reserve takes a reply once
     let modelName = model?.id ?? agent.modelId
-    let engineId: EngineId = factoryTurn?.engine ?? model?.engine ?? 'claude'
+    let engineId: EngineId = model?.engine ?? 'claude'
     let engineLabel = `${ENGINES[engineId].label} · ${model?.label ?? agent.modelId}`
 
     const started = Date.now()
@@ -1371,7 +1371,7 @@ ${note}`,
         if (factoryTurn && name !== TASK_REPORT.name) {
           if (!factoryTurn.tools.some(t => t.name === name)) return textResult('Tool unavailable in this factory execution', true)
           const stepId = randomUUID(), at = Date.now()
-          addSteps({ id: stepId, label: name === 'ler_skill' ? L('Leu a skill', 'Read the skill') : `Factory · ${name}`, detail: typeof args.path === 'string' ? args.path.slice(0, 300) : name === 'bash' ? commandStep(String(args.command ?? '')).detail : name, status: 'running' })
+          addSteps({ id: stepId, label: name === 'ler_skill' ? L('Leu a skill', 'Read the skill') : `Factory · ${name}`, detail: name === 'ler_skill' ? String(args.nome ?? '').slice(0, 300) : typeof args.path === 'string' ? args.path.slice(0, 300) : name === 'bash' ? commandStep(String(args.command ?? '')).detail : name, status: 'running' })
           let failed = false
           try { return textResult(await factoryTurn.call(name, args, control.ctl.signal)) }
           catch (error) { failed = true; return textResult(error instanceof Error ? error.message : 'Factory dispatch failed', true) }
@@ -2172,8 +2172,12 @@ ${note}`,
     try {
       for (;;) {
         try {
-          if (factoryTurn) system = factoryTurn.context(asked?.text ?? '') + '\n\n' + system
-          factoryTurn?.delivered(system)
+          if (factoryTurn) {
+            if (!model?.id) throw new Error('Factory native profile has an unknown model')
+            if (engineId !== 'codex' && engineId !== 'claude') throw new Error('Factory native profile requires a Codex or Claude model')
+            system = factoryTurn.context(asked?.text ?? '') + '\n\n' + system
+            factoryTurn.delivered(system, { modelId: agent.modelId, model: modelName, engine: engineId, effort: agent.effort })
+          }
           const events = engines[engineId].run({
             model: modelName,
             effort: agent.effort,

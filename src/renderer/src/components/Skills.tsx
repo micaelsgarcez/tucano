@@ -46,7 +46,7 @@ function result(r?: SkillReport): string {
   )
 }
 
-const from = (k: Skill): string => (k.source ? L(`do seu ${k.source.includes('/.codex/') ? 'Codex' : 'Claude Code'}`, `from your ${k.source.includes('/.codex/') ? 'Codex' : 'Claude Code'}`) : L(`mudou ${ago(k.updatedAt)}`, `changed ${ago(k.updatedAt)}`))
+const from = (k: Skill): string => (k.pin ? `${L('Pacote fixado', 'Pinned package')} · ${k.pin.revision.slice(0, 8)}` : k.source ? L(`do seu ${k.source.includes('/.codex/') ? 'Codex' : 'Claude Code'}`, `from your ${k.source.includes('/.codex/') ? 'Codex' : 'Claude Code'}`) : L(`mudou ${ago(k.updatedAt)}`, `changed ${ago(k.updatedAt)}`))
 
 // Skills are the admins': a member reads them (what the agents follow), changes nothing.
 export function SkillsPage(): ReactNode {
@@ -135,7 +135,7 @@ function Skills({ admin }: { admin: boolean }): ReactNode {
                 <strong>{k.name}</strong>
                 <span className="skill-line__desc">{k.description}</span>
                 <span className="skill-line__meta">
-                  <Who ids={k.agents} /> · {result(stats.find((x) => x.skillId === k.id))} · {from(k)}
+                  <Who ids={k.agents} selected={!!k.pin} /> · {result(stats.find((x) => x.skillId === k.id))} · {from(k)}
                 </span>
               </span>
               <Icon name="chevron" size={14} />
@@ -161,7 +161,7 @@ function Skills({ admin }: { admin: boolean }): ReactNode {
                 <button className="text-btn" onClick={() => archiveSkill(k.id, false)}>
                   {L('Reativar', 'Reactivate')}
                 </button>
-                <button
+                {!k.pin && <button
                   className="text-btn"
                   onClick={() =>
                     void confirmDialog({
@@ -173,7 +173,7 @@ function Skills({ admin }: { admin: boolean }): ReactNode {
                   }
                 >
                   {L('Apagar', 'Delete')}
-                </button>
+                </button>}
               </div>
             ))}
         </section>
@@ -200,9 +200,9 @@ function SkillPage({ skill: k, stat, onBack, onEdit }: { skill: Skill; stat?: Sk
       actions={
         admin && (
           <>
-            <button className="text-btn" onClick={onEdit}>
+            {!k.pin && <button className="text-btn" onClick={onEdit}>
               {L('Editar', 'Edit')}
-            </button>
+            </button>}
             <button className="text-btn" onClick={() => (archiveSkill(k.id, true), onBack())}>
               {L('Arquivar', 'Archive')}
             </button>
@@ -214,7 +214,7 @@ function SkillPage({ skill: k, stat, onBack, onEdit }: { skill: Skill; stat?: Sk
         <div>
           <dt>{L('Quem usa', 'Who uses it')}</dt>
           <dd>
-            <Who ids={k.agents} />
+            <Who ids={k.agents} selected={!!k.pin} />
             {admin && (
               <button className="text-btn" onClick={() => setPicking(!picking)}>
                 {picking ? L('pronto', 'done') : L('mudar', 'change')}
@@ -236,12 +236,12 @@ function SkillPage({ skill: k, stat, onBack, onEdit }: { skill: Skill; stat?: Sk
         </div>
         <div>
           <dt>{L('De onde', 'Source')}</dt>
-          <dd>{k.source ? <span title={k.source}>{L(`Lida do arquivo, ${from(k)}: o que você muda lá vale na próxima vez`, `Read from the file, ${from(k)}: what you change there applies next time`)}</span> : L(`Escrita aqui, ${from(k)}`, `Written here, ${from(k)}`)}</dd>
+          <dd>{k.pin ? <span title={k.pin.packageHash}>{from(k)} · {k.pin.root}/{k.pin.entry}</span> : k.source ? <span title={k.source}>{L(`Lida do arquivo, ${from(k)}: o que você muda lá vale na próxima vez`, `Read from the file, ${from(k)}: what you change there applies next time`)}</span> : L(`Escrita aqui, ${from(k)}`, `Written here, ${from(k)}`)}</dd>
         </div>
       </dl>
       {picking && (
         <div className="skill-pick">
-          <AgentPicker value={k.agents} onChange={setAgents} />
+          <AgentPicker value={k.agents} onChange={setAgents} selected={!!k.pin} />
         </div>
       )}
       <section className="read-group">
@@ -252,10 +252,10 @@ function SkillPage({ skill: k, stat, onBack, onEdit }: { skill: Skill; stat?: Sk
             <Markdown urlTransform={safeUrl} remarkPlugins={[remarkGfm]}>{k.body}</Markdown>
           </article>
         ) : (
-          <p className="read-empty">{L(`A receita é lida de ${k.source} a cada uso.`, `The recipe is read from ${k.source} on every use.`)}</p>
+          <p className="read-empty">{L(`A receita é lida de ${k.pin ? `${k.pin.root}/${k.pin.entry}` : k.source} a cada uso.`, `The recipe is read from ${k.pin ? `${k.pin.root}/${k.pin.entry}` : k.source} on every use.`)}</p>
         )}
       </section>
-      {admin && !k.source && (
+      {admin && !k.source && !k.pin && (
         <section className="read-group">
           <h2>{L('Histórico', 'History')}</h2>
           <History skill={k} />
@@ -266,9 +266,9 @@ function SkillPage({ skill: k, stat, onBack, onEdit }: { skill: Skill; stat?: Sk
 }
 
 // Who uses a skill, as faces and names.
-function Who({ ids }: { ids: string[] }): ReactNode {
+function Who({ ids, selected = false }: { ids: string[]; selected?: boolean }): ReactNode {
   const agents = useStore((s) => ids.map((id) => agentById(s, id)).filter((a) => !!a))
-  if (ids.length === 0) return <span className="who">{L('todos os agentes', 'all agents')}</span>
+  if (ids.length === 0) return <span className="who">{selected ? L('nenhum agente', 'no agents') : L('todos os agentes', 'all agents')}</span>
   return (
     <span className="who">
       {agents.map((a) => (
@@ -374,29 +374,29 @@ function AddFromTerminal({ onClose }: { onClose: () => void }): ReactNode {
 
 // Who uses a skill: every agent, or the ones picked (always at least one;
 // an empty list means everyone).
-export function AgentPicker({ value, onChange }: { value: string[]; onChange: (ids: string[]) => void }): ReactNode {
+export function AgentPicker({ value, onChange, selected = false }: { value: string[]; onChange: (ids: string[]) => void; selected?: boolean }): ReactNode {
   const agents = useStore((s) => s.agents.filter(isTeam))
-  const everyone = value.length === 0
+  const everyone = !selected && value.length === 0
   const toggle = (id: string): void => {
     const next = value.includes(id) ? value.filter((x) => x !== id) : [...value, id]
-    if (next.length) onChange(next)
+    if (selected || next.length) onChange(next)
   }
   return (
     <div className="agent-picker">
-      <div className="segmented">
+      {!selected && <div className="segmented">
         <button type="button" className={everyone ? 'is-active' : ''} onClick={() => onChange([])}>
           {L('Todos os agentes', 'All agents')}
         </button>
         <button type="button" className={everyone ? '' : 'is-active'} onClick={() => everyone && onChange(agents.map((a) => a.id))}>
           {L('Só alguns', 'Only some')}
         </button>
-      </div>
+      </div>}
       {!everyone && (
         <div className="agent-picker__list">
           {agents.map((a) => {
             const on = value.includes(a.id)
             return (
-              <button key={a.id} type="button" className={`agent-pill ${on ? 'is-on' : ''}`} title={on && value.length === 1 ? L('Pelo menos um agente usa a skill', 'At least one agent uses the skill') : undefined} onClick={() => toggle(a.id)}>
+              <button key={a.id} type="button" className={`agent-pill ${on ? 'is-on' : ''}`} title={!selected && on && value.length === 1 ? L('Pelo menos um agente usa a skill', 'At least one agent uses the skill') : undefined} onClick={() => toggle(a.id)}>
                 <AgentAvatar agent={a} size={18} />
                 {a.name}
                 {on && <Icon name="check" size={12} />}

@@ -15,10 +15,12 @@ const agent = (id: string, handle: string): Agent => ({
 })
 
 let db: Db
+let dbPath: string
 let skills: Skills
 let notes: string[]
 beforeEach(() => {
-  db = new Db(join(mkdtempSync(join(tmpdir(), 'ad-skills-')), 'test.db'))
+  dbPath = join(mkdtempSync(join(tmpdir(), 'ad-skills-')), 'test.db')
+  db = new Db(dbPath)
   notes = []
   skills = new Skills({ db, emit: () => {}, notify: (t) => notes.push(t) })
   db.saveAgent(agent('a1', 'staff'))
@@ -135,5 +137,77 @@ describe('in a reply', () => {
     expect(replies[1]).toContain('Ela só vale depois que o usuário aprovar')
     const steps = db.messages().find((m) => m.author.kind === 'agent')!.run!.steps.map((s) => `${s.label}: ${s.detail}`)
     expect(steps).toEqual(expect.arrayContaining(['Leu a skill: testes-do-core', 'Propôs uma skill: build-ios']))
+  })
+})
+
+describe('managed package skills', () => {
+  const entry = { name: 'pstack', description: 'Pinned workflow', pin: { packageHash: 'hash', revision: 'revision', root: 'pstack', entry: 'skills/poteto-mode/SKILL.md' } }
+
+  it('preserves revoked assignment and archived state across registration and upgrades', () => {
+    skills.registerPinned([entry], ['a1'])
+    const k = skills.forAgent('a1')[0]!
+    skills.save({ id: k.id, name: k.name, description: k.description, body: '', agents: [] })
+    expect(skills.forAgent('a1')).toEqual([])
+    db.close()
+    db = new Db(dbPath)
+    skills = new Skills({ db, emit: () => {} })
+    skills.registerPinned([{ ...entry, pin: { ...entry.pin, packageHash: 'new-hash' } }], ['a1', 'a2'])
+    expect(db.skill(k.id)).toMatchObject({ agents: [], pin: { packageHash: 'new-hash' } })
+    expect(skills.forAgent('a2')).toEqual([])
+    skills.archive(k.id, true)
+    skills.registerPinned([entry], ['a1'])
+    expect(db.skill(k.id)?.state).toBe('archived')
+    expect(() => skills.remove(k.id)).toThrow('Archive')
+  })
+
+  it('keeps an existing pin ahead of legacy name collisions and avoids unchanged startup writes', () => {
+    let now = 1
+    const emitted: unknown[] = []
+    skills = new Skills({ db, emit: (event) => emitted.push(event), now: () => now })
+    db.saveSkill({ id: 'legacy', name: entry.name, description: 'Legacy', body: 'Authored', agents: [], state: 'archived', createdAt: 0, updatedAt: 0 })
+    db.saveSkill({ id: 'managed', ...entry, body: '', agents: ['a1'], state: 'active', createdAt: 0, updatedAt: 0 })
+    skills.registerPinned([entry], ['a2'])
+    expect(emitted).toEqual([])
+    expect(db.skill('managed')).toMatchObject({ agents: ['a1'], updatedAt: 0 })
+    now = 2
+    skills.registerPinned([{ ...entry, description: 'Updated description' }], ['a2'])
+    expect(emitted).toHaveLength(1)
+    expect(db.skill('managed')).toMatchObject({ agents: ['a1'], description: 'Updated description', updatedAt: 2 })
+    expect(db.skill('legacy')?.body).toBe('Authored')
+  })
+
+  it('reads verified bytes only, confines supporting files and propagates verification failure', () => {
+    skills.registerPinned([entry], ['a1'])
+    const a = db.agent('a1')!
+    expect(skills.read(a, { nome: 'pstack' })).toMatchObject({ error: true, reply: 'Pinned package unavailable' })
+    const reads: string[] = []
+    skills.setPinnedReader((pin, path) => {
+      expect(pin).toEqual(entry.pin)
+      reads.push(path)
+      return 'verified recipe'
+    })
+    expect(skills.read(a, { nome: 'pstack' }).reply).toBe('verified recipe')
+    expect(skills.read(a, { nome: 'pstack', arquivo: 'references/guide.md' }).reply).toBe('verified recipe')
+    expect(reads).toEqual(['pstack/skills/poteto-mode/SKILL.md', 'pstack/references/guide.md'])
+    for (const arquivo of ['../ponytail/SKILL.md', '/ponytail/SKILL.md', '..\\ponytail\\SKILL.md']) expect(skills.read(a, { nome: 'pstack', arquivo }).error).toBe(true)
+    expect(reads).toHaveLength(2)
+    expect(skills.read(db.agent('a2')!, { nome: 'pstack' }).error).toBe(true)
+    skills.setPinnedReader(() => { throw new Error('Package hash mismatch') })
+    expect(skills.read(a, { nome: 'pstack' })).toMatchObject({ error: true, reply: 'Package hash mismatch' })
+  })
+
+  it('refuses forged provenance, authored collisions and content/version mutation', () => {
+    const forged = { ...recipe, pin: entry.pin }
+    expect(() => skills.save(forged)).toThrow('provenance')
+    skills.registerPinned([entry], ['a1'])
+    const k = skills.forAgent('a1')[0]!
+    skills.save({ id: k.id, name: 'renamed', description: 'changed', body: 'forged', agents: ['a2'] })
+    expect(db.skill(k.id)).toMatchObject({ name: 'pstack', description: entry.description, body: '', pin: entry.pin, agents: ['a2'] })
+    expect(() => skills.restore(k.id, 1)).toThrow('managed')
+    skills.archive(k.id, true)
+    expect(() => skills.save({ ...recipe, name: 'pstack' })).toThrow()
+    expect(skills.propose(db.agent('a1')!, { nome: 'pstack', quando_usar: 'always', receita: 'forged' }).error).toBe(true)
+    skills.save({ ...recipe, name: 'ponytail' })
+    expect(() => skills.registerPinned([{ ...entry, name: 'ponytail' }], ['a1'])).toThrow()
   })
 })

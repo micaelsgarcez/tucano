@@ -312,6 +312,25 @@ export class ConnectorManager {
 
   constructor(private deps: ConnectorDeps) {}
 
+  async githubToken(agentId: string): Promise<{ token: string } | { waiting: string }> {
+    const eligible = (): ReturnType<Db['connectors']> => {
+      const agent = this.deps.db.agent(agentId)
+      if (!agent || agent.archived) return []
+      return this.deps.db.connectors().filter(c => c.kind === 'remote' && c.auth === 'token' && c.url === 'https://api.githubcopilot.com/mcp/' && agent.grants[c.id] === 'read_write')
+    }
+    const connectors = eligible()
+    if (connectors.length !== 1) return { waiting: connectors.length ? 'Multiple authorized GitHub token connectors; keep one assigned to the factory executor' : 'Assign the native GitHub token connector with read/write access to the factory executor' }
+    const connector = connectors[0]!
+    try {
+      const saved = await this.deps.secrets.get(key(connector.id, 'token'))
+      if (!saved) return { waiting: 'The native GitHub connector needs its token' }
+      const token = await resolveOp(saved, this.deps.readOp)
+      const live = eligible()
+      if (live.length !== 1 || live[0]?.id !== connector.id) return { waiting: 'The native GitHub grant changed; retry after authorization' }
+      return token.trim() ? { token } : { waiting: 'The native GitHub connector needs its token' }
+    } catch { return { waiting: 'The native GitHub token is unavailable; unlock or reconnect the existing connector' } }
+  }
+
   list(): Connector[] {
     return this.deps.db.connectors().map((c) => this.withStatus(c))
   }

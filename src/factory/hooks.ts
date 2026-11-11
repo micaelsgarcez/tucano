@@ -2,17 +2,19 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { object, string } from './types'
+import { object, sha, string } from './types'
 
 export const hash = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex')
 export class Capabilities {
   readonly files: Record<string, string>
+  readonly revisions: { pstack: string; ponytail: string }
   constructor(readonly root: string, readonly pin: string) {
     this.root = realpathSync(root)
     const bytes = readFileSync(join(this.root, 'manifest.json'))
     if (hash(bytes) !== pin) throw new Error('Factory package manifest changed')
     const manifest = object(JSON.parse(bytes.toString()))
     if (manifest.version !== 1) throw new Error('Unsupported capability package')
+    this.revisions = { pstack: sha(manifest.pstackRevision), ponytail: sha(manifest.ponytailRevision) }
     this.files = Object.fromEntries(Object.entries(object(manifest.files)).map(([path, digest]) => [path, string(digest)]))
     this.verify()
   }

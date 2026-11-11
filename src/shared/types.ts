@@ -649,7 +649,8 @@ export const MODELS: Model[] = [
   model('haiku', 'claude', 'Haiku', 'Rápido, gasta pouco do plano', 'Fast, uses little of the plan'),
   model('gpt-5.6-luna', 'codex', 'GPT-5.6 Luna', 'Bom pra maioria', 'Good for most things'),
   model('gpt-5.6-terra', 'codex', 'GPT-5.6 Terra', 'Problemas difíceis', 'Hard problems'),
-  model('gpt-5.6-sol', 'codex', 'GPT-5.6 Sol', 'O mais capaz, mais lento', 'The most capable, slower')
+  model('gpt-5.6-sol', 'codex', 'GPT-5.6 Sol', 'O mais capaz, mais lento', 'The most capable, slower'),
+  model('gpt-6-astra', 'codex', 'GPT-6 Astra', 'Problemas difíceis', 'Hard problems')
 ]
 
 const effort = (id: Effort, pt: string, en: string): { id: Effort; label: string } => ({
@@ -1020,6 +1021,13 @@ export function describeSchedule(s: Schedule): string {
 // A recipe an agent follows for a kind of task ("how to run the Core tests").
 // Every agent it applies to sees its name and when to use it; the body is read
 // on demand. One an agent writes or changes waits for me, with a diff.
+export interface SkillPin {
+  packageHash: string
+  revision: string
+  root: string
+  entry: string
+}
+
 export interface Skill {
   id: string
   name: string // short and unique among active skills, e.g. "testes-do-core"
@@ -1030,6 +1038,7 @@ export interface Skill {
   replaces?: string // a pending change to this active skill
   proposedBy?: string // the agent that proposed it (pending)
   reason?: string // why, in the agent's words
+  pin?: SkillPin // managed package; bytes are verified on every read
   source?: string // linked to a SKILL.md of the user's Claude Code or Codex: read from there, not edited here
   createdAt: number
   updatedAt: number
@@ -1058,7 +1067,7 @@ export interface SkillVersion {
 
 export type SkillInput = Pick<Skill, 'name' | 'description' | 'body' | 'agents'> & { id?: string; source?: string }
 
-export const skillApplies = (s: Skill, agentId: string): boolean => s.state === 'active' && (s.agents.length === 0 || s.agents.includes(agentId))
+export const skillApplies = (s: Skill, agentId: string): boolean => s.state === 'active' && ((!s.pin && s.agents.length === 0) || s.agents.includes(agentId))
 
 // ---------- report (spec §20) ----------
 
