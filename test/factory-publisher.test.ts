@@ -33,14 +33,18 @@ const mockFetch: typeof fetch = async (url, init) => {
   if (path === '/pulls' && init?.method === 'POST') { creates++; prExists = true; if (ambiguous) { ambiguous = false; throw new Error(token) } return json({ number: 1 }) }
   if (path === '/pulls') return json(prExists ? [{ number: 1 }] : [])
   if (path === '/pulls/1') return json({ number: 1, state: 'open', merged: false, merged_by: null, head: { sha: head ?? input.candidateSha, ref: branch, repo: { id: config.repository.id } }, base: { ref: 'main', repo: { id: config.repository.id } } })
-  if (path.endsWith('/check-runs')) {
+  if (path.startsWith('/actions/')) {
     if (denied) return json({ message: token }, 403)
     if (changed) head = input.baseSha
-    return json({ check_runs: [{ id: 2, name: 'test', status: pending ? 'in_progress' : 'completed', conclusion: 'success' }, { id: 1, name: 'test', status: 'completed', conclusion: 'failure' }] })
+    if (path === '/actions/runs') return json({ workflow_runs: [workflow(), workflow({ id: 1, conclusion: 'failure' })] })
+    if (path.endsWith('/jobs')) return json({ jobs: [job()] })
+    if (path === '/actions/runs/2') return json(workflow())
   }
   if (path.endsWith('/statuses')) return json([])
   throw new Error(`Unexpected path ${path}`)
 }
+function workflow(overrides = {}) { return { id: 2, workflow_id: 10, event: 'pull_request', run_attempt: 1, head_sha: input.candidateSha, repository: { id: config.repository.id, full_name: config.repository.fullName }, status: pending ? 'in_progress' : 'completed', conclusion: 'success', ...overrides } }
+function job(overrides = {}) { return { id: 20, run_id: 2, run_attempt: 1, head_sha: input.candidateSha, name: 'test', status: 'completed', conclusion: 'success', ...overrides } }
 function publisher(credentials = async () => ({ token })) { return new Publisher(config, credentials, { fetch: mockFetch, remote }) }
 it('imports a prerequisite bundle and publishes exact SHA once across retries', async () => {
   expect(await publisher().publish(input)).toMatchObject({ state: 'published', candidateSha: input.candidateSha, ci: { passed: true, source: 'controller' } })
@@ -77,11 +81,12 @@ it('requires both the latest check and latest status with the same name to pass'
   const p = new Publisher(config, async () => ({ token }), { fetch: fetchBoth, remote })
   expect(await p.publish(input)).toMatchObject({ state: 'published', ci: { passed: false, checks: [{ name: 'test', state: 'success' }, { name: 'test', state: 'failure' }] } })
 })
-it('reads all check pages and uses the latest ID even across pages', async () => {
+it('reads all run and job pages, selecting the latest workflow run across pages', async () => {
   const paginated: typeof fetch = async (url, init) => {
-    if (!String(url).includes('/check-runs')) return mockFetch(url, init)
-    const page = new URL(String(url)).searchParams.get('page')
-    return Response.json({ check_runs: page === '1' ? Array.from({ length: 100 }, (_, i) => ({ id: i, name: 'test', status: 'completed', conclusion: 'failure' })) : [{ id: 101, name: 'test', status: 'completed', conclusion: 'success' }] })
+    const u = new URL(String(url)), page = u.searchParams.get('page')
+    if (u.pathname.endsWith('/actions/runs')) return Response.json({ workflow_runs: page === '1' ? Array.from({ length: 100 }, () => workflow({ id: 1, conclusion: 'failure' })) : [workflow()] })
+    if (u.pathname.endsWith('/jobs')) return Response.json({ jobs: page === '1' ? Array.from({ length: 100 }, (_, i) => job({ id: i, name: `other-${i}` })) : [job({ id: 101 })] })
+    return mockFetch(url, init)
   }
   expect(await new Publisher(config, async () => ({ token }), { fetch: paginated, remote }).publish(input)).toMatchObject({ state: 'published', ci: { passed: true } })
 })
@@ -159,4 +164,49 @@ it('rejects a symlinked shallow boundary and keeps push failures recoverable', a
   rmSync(join(root, 'baseline/.git/shallow'))
   const unavailable = new Publisher(config, async () => ({ token }), { fetch: mockFetch, remote: join(root, 'absent.git') })
   expect(await unavailable.publish(input)).toEqual({ state: 'waiting', reason: 'Git push unavailable; check transport and contents write permission, then retry' }); expect(ref()).toBeNull()
+})
+
+it.each(['missing required job', 'pending job'])('does not accept a successful status with %s', async scenario => {
+  const fetchMissing: typeof fetch = async (url, init) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/jobs')) return Response.json({ jobs: scenario === 'missing required job' ? [] : [job({ status: 'queued', conclusion: null })] })
+    if (path.endsWith('/statuses')) return Response.json([{ id: 1, context: 'test', state: 'success' }])
+    return mockFetch(url, init)
+  }
+  expect(await new Publisher(config, async () => ({ token }), { fetch: fetchMissing, remote }).publish(input)).toMatchObject({ state: 'published', ci: { passed: false } })
+})
+it.each(['queued', 'failure', 'changed', 'old-sha', 'wrong-repository', 'old-attempt', 'wrong-run', 'old-job-sha', 'duplicate-name'])('rejects stale or unsuccessful Actions evidence: %s', async mode => {
+  const evidence: typeof fetch = async (url, init) => {
+    const path = new URL(String(url)).pathname
+    const run = workflow(mode === 'queued' ? { run_attempt: 2, status: 'queued', conclusion: null }
+      : mode === 'failure' ? { conclusion: 'failure' }
+      : mode === 'old-sha' ? { head_sha: input.baseSha }
+      : mode === 'wrong-repository' ? { repository: { id: 1, full_name: 'other/repo' } } : {})
+    if (path.endsWith('/actions/runs')) return Response.json({ workflow_runs: mode === 'duplicate-name' ? [run, workflow({ id: 3, workflow_id: 11 })] : [run] })
+    if (path.endsWith('/jobs')) return Response.json({ jobs: [job(mode === 'old-attempt' ? { run_attempt: 0 }
+      : mode === 'wrong-run' ? { run_id: 1 } : mode === 'old-job-sha' ? { head_sha: input.baseSha }
+      : path.includes('/runs/3/') ? { id: 30, run_id: 3, conclusion: 'failure' }
+      : mode === 'queued' ? { run_attempt: 2 } : {})] })
+    if (path.endsWith('/actions/runs/2')) return Response.json(mode === 'changed' ? workflow({ run_attempt: 2, status: 'queued', conclusion: null }) : run)
+    if (path.endsWith('/actions/runs/3')) return Response.json(workflow({ id: 3, workflow_id: 11 }))
+    return mockFetch(url, init)
+  }
+  const result = await new Publisher(config, async () => ({ token }), { fetch: evidence, remote }).publish(input)
+  if (['queued', 'failure', 'duplicate-name'].includes(mode)) expect(result).toMatchObject({ state: 'published', ci: { passed: false } })
+  else expect(result.state).toBe('waiting')
+})
+it('accepts a successful latest rerun and reads commit statuses across pages', async () => {
+  const rerun: typeof fetch = async (url, init) => {
+    const u = new URL(String(url)), path = u.pathname
+    if (path.endsWith('/actions/runs')) return Response.json({ workflow_runs: [workflow({ run_attempt: 2 }), workflow({ run_attempt: 1, conclusion: 'failure' })] })
+    if (path.endsWith('/actions/runs/2')) return Response.json(workflow({ run_attempt: 2 }))
+    if (path.endsWith('/jobs')) {
+      expect(path).toContain('/attempts/2/jobs')
+      return Response.json({ jobs: [job({ run_attempt: 2 })] })
+    }
+    if (path.endsWith('/statuses')) return Response.json(u.searchParams.get('page') === '1'
+      ? Array.from({ length: 100 }, (_, id) => ({ id, context: 'test', state: 'failure' })) : [{ id: 101, context: 'test', state: 'success' }])
+    return mockFetch(url, init)
+  }
+  expect(await new Publisher(config, async () => ({ token }), { fetch: rerun, remote }).publish(input)).toMatchObject({ state: 'published', ci: { passed: true } })
 })

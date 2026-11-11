@@ -132,10 +132,30 @@ export class Publisher {
       const number = integer(object(pulls[0]).number)
       await readPr(number)
       const checks = new Map<string, { id: number; name: string; state: string }>()
-      for (const item of await list(`/commits/${candidate}/check-runs?filter=all`, 'checks read', 'check_runs')) {
-        const c = object(item), name = string(c.name), key = `check:${name}`, n = integer(c.id)
-        if (n > (checks.get(key)?.id ?? -1)) checks.set(key, { id: n, name, state: c.status === 'completed' ? string(c.conclusion) : 'pending' })
+      const parseRun = (value: unknown) => {
+        const r = object(value), repository = object(r.repository)
+        if (r.head_sha !== candidate || repository.id !== this.config.repository.id || repository.full_name !== this.config.repository.fullName) throw new Halt('waiting', 'Actions run differs from candidate repository or SHA')
+        return { id: integer(r.id), workflow: integer(r.workflow_id), event: string(r.event), attempt: integer(r.run_attempt), status: string(r.status), conclusion: r.conclusion === null ? null : string(r.conclusion) }
       }
+      const runs = new Map<string, ReturnType<typeof parseRun>>()
+      for (const item of await list(`/actions/runs?head_sha=${candidate}`, 'actions read', 'workflow_runs')) {
+        const run = parseRun(item), key = `${run.workflow}:${run.event}`, previous = runs.get(key)
+        if (!previous || run.id > previous.id || (run.id === previous.id && run.attempt > previous.attempt)) runs.set(key, run)
+      }
+      let runsPassed = runs.size > 0
+      for (const run of runs.values()) {
+        const runPassed = run.status === 'completed' && run.conclusion === 'success'
+        runsPassed &&= runPassed
+        for (const item of await list(`/actions/runs/${run.id}/attempts/${run.attempt}/jobs`, 'actions read', 'jobs')) {
+          const job = object(item), name = string(job.name)
+          if (job.run_id !== run.id || job.run_attempt !== run.attempt || job.head_sha !== candidate) throw new Halt('waiting', 'Actions job differs from candidate run or attempt')
+          const state = job.status !== 'completed' ? 'pending' : string(job.conclusion)
+          checks.set(`job:${run.id}:${integer(job.id)}`, { id: integer(job.id), name, state: runPassed ? state : run.status === 'completed' ? run.conclusion ?? 'pending' : 'pending' })
+        }
+        const current = parseRun(await api(`/actions/runs/${run.id}`, 'actions read'))
+        if (current.id !== run.id || current.workflow !== run.workflow || current.event !== run.event || current.attempt !== run.attempt || current.status !== run.status || current.conclusion !== run.conclusion) throw new Halt('waiting', 'Actions run changed during CI observation; retry required')
+      }
+      const actions = [...checks.values()]
       for (const item of await list(`/commits/${candidate}/statuses`, 'statuses read')) {
         const c = object(item), name = string(c.context), key = `status:${name}`, n = integer(c.id)
         if (n > (checks.get(key)?.id ?? -1)) checks.set(key, { id: n, name, state: string(c.state) })
@@ -144,7 +164,7 @@ export class Publisher {
       const after = await head()
       if (after !== candidate && !(after === null && pr.merged === true)) throw new Halt('conflict', 'Publication branch changed during CI observation')
       const observed = [...checks.values()].map(({ name, state }) => ({ name, state }))
-      const passed = this.config.requiredChecks.every(name => { const matches = observed.filter(c => c.name === name); return matches.length > 0 && matches.every(c => c.state === 'success') })
+      const passed = runsPassed && this.config.requiredChecks.every(name => actions.some(c => c.name === name)) && this.config.requiredChecks.every(name => { const matches = observed.filter(c => c.name === name); return matches.length > 0 && matches.every(c => c.state === 'success') })
       const merger = pr.merged_by === null || pr.merged_by === undefined ? null : object(pr.merged_by)
       return { state: 'published', pr: number, url: `https://github.com/${this.config.repository.fullName}/pull/${number}`, candidateSha: candidate,
         ci: { passed, checks: observed, source: 'controller', observedAt: Date.now() }, merged: pr.merged === true, by: merger ? string(merger.login) : null, byType: merger ? string(merger.type) : null }
