@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -46,14 +46,19 @@ export class Publisher {
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         })
         if (response.status === 404 && path.startsWith('/git/ref/')) return null
-        if (!response.ok) throw new Halt('waiting', `GitHub ${permission}: HTTP ${response.status}; check connector access`)
+        if (!response.ok) {
+          const limited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
+          throw new Halt('waiting', limited ? 'GitHub rate limit reached; retry later' : `GitHub ${permission}: HTTP ${response.status}; ${response.status === 401 || response.status === 403 ? 'check connector access' : 'retry required'}`)
+        }
         return response.json()
       }
       const repository = object(await api('', 'repository read'))
       if (repository.id !== this.config.repository.id || repository.full_name !== this.config.repository.fullName) throw new Halt('conflict', 'GitHub repository identity mismatch')
-      const receipt = object(JSON.parse(await readFile(join(input.attemptDir, 'candidate.json'), 'utf8')))
-      const verified = object(JSON.parse(await readFile(join(input.attemptDir, 'verify.json'), 'utf8')))
-      if (receipt.candidateSha !== candidate || receipt.baseSha !== base || verified.candidateSha !== candidate || verified.passed !== true) throw new Halt('conflict', 'Candidate verification receipt mismatch')
+      try {
+        const receipt = object(JSON.parse(await readFile(join(input.attemptDir, 'candidate.json'), 'utf8')))
+        const verified = object(JSON.parse(await readFile(join(input.attemptDir, 'verify.json'), 'utf8')))
+        if (receipt.candidateSha !== candidate || receipt.baseSha !== base || verified.candidateSha !== candidate || verified.passed !== true) throw new Error('Mismatch')
+      } catch { throw new Halt('conflict', 'Candidate verification receipt missing, invalid or mismatched') }
       temporary = await mkdtemp(join(tmpdir(), 'factory-publish-'))
       const directory = temporary
       const git = async (args: string[], secret?: string) => {
@@ -62,13 +67,26 @@ export class Publisher {
           GIT_CONFIG_KEY_2: 'http.followRedirects', GIT_CONFIG_VALUE_2: 'false', GIT_CONFIG_KEY_3: 'protocol.file.allow', GIT_CONFIG_VALUE_3: 'always' }
         if (secret) { env.GIT_CONFIG_COUNT = '5'; env.GIT_CONFIG_KEY_4 = 'http.https://github.com/.extraheader'; env.GIT_CONFIG_VALUE_4 = `Authorization: Basic ${Buffer.from(`x-access-token:${secret}`).toString('base64')}` }
         try { return (await execute('git', args, { cwd: directory, env, signal, timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout.trim() }
-        catch { throw new Halt('waiting', 'Git transport unavailable; check contents write permission and retry') }
+        catch {
+          signal.throwIfAborted()
+          throw args[0] === 'push' ? new Halt('waiting', 'Git push unavailable; check transport and contents write permission, then retry') : new Halt('conflict', 'Local candidate Git validation failed; inspect baseline and bundle')
+        }
       }
       await git(['init', '--bare', '--template=', directory])
       // Shallow export bundles can require the trusted baseline's objects, never its configuration.
       const objects = join(input.attemptDir, 'baseline', '.git', 'objects')
       if (/[\r\n]/.test(objects)) throw new Halt('conflict', 'Invalid baseline path')
       await writeFile(join(directory, 'objects/info/alternates'), `${objects}\n`)
+      const shallowPath = join(input.attemptDir, 'baseline', '.git', 'shallow')
+      try {
+        const stat = await lstat(shallowPath)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Invalid boundary file')
+        const shallow = await readFile(shallowPath, 'utf8')
+        if (!/^(?:[0-9a-f]{40}\n)+$/.test(shallow)) throw new Error('Invalid boundary commits')
+        await writeFile(join(directory, 'shallow'), shallow)
+      } catch (error) {
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw new Halt('conflict', 'Invalid trusted baseline shallow boundary')
+      }
       await git(['fetch', '--no-tags', join(input.attemptDir, 'candidate.bundle'), 'HEAD'])
       if (await git(['rev-parse', 'FETCH_HEAD']) !== candidate || await git(['show', '-s', '--format=%P', candidate]) !== base) throw new Halt('conflict', 'Bundle commit or parent differs from verified candidate')
       const list = async (path: string, permission: string, key?: string): Promise<unknown[]> => {

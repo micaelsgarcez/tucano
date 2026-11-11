@@ -97,7 +97,7 @@ test.each([true, false])('passing candidate automatically publishes, packet read
   await f.factory.tick(); await f.factory.tick()
   expect(comments.filter(c => c.includes('Waiting for merge'))).toHaveLength(1)
   writeFileSync(join(dir, 'gate.json'), JSON.stringify({ state: 'published', candidateSha: 'a'.repeat(40), reviewMessageId: 'review-message', ciPassed: true, reviewPassed: true, merged: true, mergedByType: 'User', mergedBy: 'owner' }))
-  await f.factory.tick(); expect(f.factory.store.get(a.id).stage).toBe('completed'); expect(completed).toBe(1)
+  await f.factory.tick(); expect(f.factory.store.get(a.id)).toMatchObject({ stage: 'completed', waiting: null }); expect(completed).toBe(1)
 })
 test('failed clean verification preserves the reservation and never dispatches review', async () => {
   const f = fixture(); await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
@@ -153,8 +153,8 @@ test('helper launch failure blocks visibly instead of leaving a reserved job han
 })
 
 test('operator control cancellation waits for observed drainage, stops native runs and preserves evidence', async () => {
-  const stopped: string[] = []
-  const f = fixture({ stop: messageId => { stopped.push(messageId) } })
+  const stopped: string[] = []; const comments: string[] = []
+  const f = fixture({ stop: messageId => { stopped.push(messageId) }, comment: async (_, text) => { comments.push(text) } })
   await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
   const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'build')
   const job = f.factory.store.newJob(a.id, 'build'); f.factory.store.launched(job.id, 'execution')
@@ -170,8 +170,11 @@ test('operator control cancellation waits for observed drainage, stops native ru
   try {
     writeFileSync(join(f.root, 'attempts', a.id, 'control.json'), JSON.stringify({ action: 'cancel', attemptId: a.id, observedDrained: true }))
     await f.factory.tick(); expect(f.factory.store.active()?.id).toBe(a.id); expect(stopped).toEqual([])
+    expect(f.factory.store.get(a.id).waiting).toContain('worker to stop and drain')
     status = 'exited 0'
     await f.factory.tick(); expect(f.factory.store.get(a.id).stage).toBe('cancelled'); expect(stopped).toEqual(['pending-message'])
+    expect(f.factory.store.get(a.id).waiting).toBeNull()
+    expect(comments.some(text => text.includes(`factory/${a.id}`) && text.includes('PR'))).toBe(true)
     await f.factory.completed(job.id, { id: 'pending-message', author: { kind: 'agent', id: f.cfg.executorAgentId }, text: 'late', run: { status: 'done' }, usage: [] })
     expect(f.factory.store.get(a.id).stage).toBe('cancelled')
     expect(existsSync(join(f.root, 'attempts', a.id, 'message-pending-message.json'))).toBe(true)
@@ -194,7 +197,7 @@ test('permissions and CI recover without another export or duplicate review, wit
   const comments: string[] = []; let state: 'permissions' | 'ci' | 'ready' = 'permissions'; let published = 0
   const f = fixture({
     comment: async (_, text) => { comments.push(text) },
-    publish: async input => { published++; return state === 'permissions' ? { state: 'waiting', reason: 'Grant checks read access in the native GitHub token' } : { state: 'published', pr: 7, url: 'https://github.com/micaelsgarcez/central/pull/7', candidateSha: input.candidateSha, ci: { passed: state === 'ready', checks: [{ name: 'test', state: state === 'ready' ? 'success' : 'pending' }], source: 'controller', observedAt: Date.now() }, merged: false, by: null, byType: null } }
+    publish: async input => { published++; return state === 'permissions' ? { state: 'waiting', reason: 'Grant checks read access in the native GitHub token' } : { state: 'published', pr: 7, url: 'https://github.com/micaelsgarcez/central/pull/7', candidateSha: input.candidateSha, ci: { passed: state === 'ready', checks: [{ name: 'test', state: state === 'ready' ? 'success' : 'pending' }], source: 'controller', observedAt: Date.now() + published }, merged: false, by: null, byType: null } }
   })
   await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
   const a = f.factory.store.active()!; const dir = join(f.root, 'attempts', a.id)
@@ -213,6 +216,9 @@ test('permissions and CI recover without another export or duplicate review, wit
   expect(f.launched).toHaveLength(0)
   state = 'ready'; await f.factory.tick(); await f.factory.tick()
   expect(f.launched).toHaveLength(1); expect(published).toBe(6)
+  const evidence = new DatabaseSync(join(f.root, '../factory.sqlite'))
+  expect(evidence.prepare("SELECT COUNT(*) AS count FROM evidence WHERE kind='publication.observed'").get()?.count).toBe(3)
+  evidence.close()
   expect(f.factory.store.get(a.id)).toMatchObject({ blocked: null, waiting: null })
   expect(readFileSync(join(dir, 'candidate.patch'), 'utf8')).toBe('original candidate bytes')
 })
@@ -278,4 +284,50 @@ test('legacy database migration preserves the candidate and requires exact expli
   f.cfg.publication.adoptAttempts = [{ attemptId: a.id, candidateSha }]
   await recovered.tick(); expect(publications).toBe(1)
   expect(recovered.store.get(a.id)).toMatchObject({ publishAuthorized: true, waiting: 'Permissions pending', candidateSha })
+})
+
+
+test.each(['skills', 'package'])('prelaunch rejects invalid %s before reserving any native job', async invalid => {
+  const comments: string[] = []
+  const f = fixture({ assertSkills: () => { if (invalid === 'skills') throw new Error('Required skill disabled') }, comment: async (_, text) => { comments.push(text) } })
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!
+  if (invalid === 'package') {
+    const db = new DatabaseSync(join(f.root, '../factory.sqlite'))
+    db.prepare('UPDATE attempts SET package_hash=? WHERE id=?').run('f'.repeat(64), a.id); db.close()
+  }
+  f.cfg.operationsPath = join(f.root, 'operations.py'); writeFileSync(f.cfg.operationsPath, '')
+  writeFileSync(join(f.root, 'attempts', a.id, 'prepared.json'), '{}')
+  await f.factory.tick()
+  expect(f.factory.store.jobs(a.id)).toHaveLength(0); expect(f.launched).toHaveLength(0)
+  const reason = invalid === 'skills' ? 'Required skill disabled' : 'package differs'
+  expect(f.factory.store.get(a.id).blocked).toContain(reason)
+  expect(comments.some(text => text.includes(reason))).toBe(true)
+})
+
+test('stray operator control reports a waiting reason and prevents publication', async () => {
+  let publications = 0
+  const f = fixture({ publish: async () => { publications++; return { state: 'waiting', reason: 'unexpected' } } })
+  await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+  const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'review')
+  writeFileSync(join(f.root, 'attempts', a.id, 'control.json'), '{}')
+  await f.factory.tick()
+  expect(f.factory.store.get(a.id).waiting).toContain('valid cancel request')
+  expect(publications).toBe(0)
+})
+
+test('automatic reconciliation polls review every 30 seconds and merge every 120 seconds', async () => {
+  vi.useFakeTimers()
+  try {
+    const f = fixture(); await f.factory.start({ title: 'Fix', instruction: 'Fix', criteria: ['Works'] }, f.human)
+    const a = f.factory.store.active()!; f.factory.store.transition(a.id, 'review')
+    const tick = vi.spyOn(f.factory, 'tick').mockResolvedValue()
+    f.factory.startTimer()
+    await vi.advanceTimersByTimeAsync(60_000); expect(tick).toHaveBeenCalledTimes(2)
+    f.factory.store.transition(a.id, 'merge')
+    await vi.advanceTimersByTimeAsync(30_000); expect(tick).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(90_000); expect(tick).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(30_000); expect(tick).toHaveBeenCalledTimes(4)
+    f.factory.close()
+  } finally { vi.useRealTimers() }
 })

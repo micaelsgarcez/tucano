@@ -52,7 +52,7 @@ export class Factory {
   private async wait(a: Attempt, reason: string | null): Promise<void> {
     if (this.store.get(a.id).waiting === reason) return
     this.store.wait(a.id, reason)
-    if (reason) await this.ports.comment(a.taskId, `Factory: ${reason}`)
+    if (reason && a.taskId) await this.ports.comment(a.taskId, `Factory: ${reason}`)
   }
   private labels(id: string): { engine: string; model: string } { const profile = this.store.jobs(id).findLast(j => j.profile)?.profile; return { engine: profile?.engine ?? 'not-run', model: profile?.model ?? 'not-run' } }
   private block(id: string, reason: string): void {
@@ -68,7 +68,16 @@ export class Factory {
     this.telemetry.stage(seconds, { stage: a.stage, ...this.labels(id), outcome: stage === 'cancelled' ? 'cancelled' : 'passed' })
     this.telemetry.log('stage.changed', { attemptId: id, from: a.stage, to: stage, wallSeconds: seconds })
   }
-  startTimer(): void { this.timer = setInterval(() => { void this.tick().catch(error => { const a = this.store.active(); if (a) this.block(a.id, error instanceof Error ? error.message : 'Factory reconciliation failed') }) }, 30_000); this.timer.unref() }
+  startTimer(): void {
+    let lastMergePoll = 0
+    this.timer = setInterval(() => {
+      const merging = this.store.active()?.stage === 'merge'
+      if (merging && Date.now() - lastMergePoll < 120_000) return
+      lastMergePoll = merging ? Date.now() : 0
+      void this.tick().catch(error => { if (this.closed) return; const a = this.store.active(); if (a) this.block(a.id, error instanceof Error ? error.message : 'Factory reconciliation failed') })
+    }, 30_000)
+    this.timer.unref()
+  }
   close(): void { if (this.closed) return; this.closed = true; this.abort.abort(); if (this.timer) clearInterval(this.timer); this.telemetry.close(); this.store.close() }
   private dir(a: Attempt): string { return join(this.root, 'attempts', a.id) }
   private write(a: Attempt, file: string, value: unknown): void { mkdirSync(this.dir(a), { recursive: true, mode: 0o700 }); writeFileSync(join(this.dir(a), file), JSON.stringify(value, null, 2), { mode: 0o600 }) }
@@ -106,6 +115,7 @@ export class Factory {
   private agent(role: Role): string { return role === 'build' ? this.config.executorAgentId : role === 'helper' ? this.config.helperAgentId : this.config.reviewerAgentId }
   private async launch(a: Attempt, role: Role, instructions: string): Promise<void> {
     if (!this.current(a, role === 'review' ? 'review' : 'build')) return
+    if (a.packageHash !== this.capabilities.pin) throw new Error('Factory job package differs from the immutable attempt package')
     this.ports.assertSkills(this.agent(role))
     const j = this.store.newJob(a.id, role)
     this.write(a, `job-${j.id}.json`, j)
@@ -133,9 +143,11 @@ export class Factory {
       if (control.action === 'cancel' && control.attemptId === a.id && control.observedDrained === true) {
         const stopped = await command('docker', ['inspect', '-f', '{{.State.Status}} {{.State.Pid}}', this.config.container])
         if (stopped.code === 0 && stopped.stdout.trim() === 'exited 0') {
-          this.transition(a.id, 'cancelled'); for (const job of this.store.jobs(a.id)) if (job.messageId && job.state === 'running') this.ports.stop(job.messageId); if (a.taskId) await this.ports.comment(a.taskId, 'Factory cancelada pelo operador após confirmar worker drenado. Evidências preservadas.'); return
+          this.transition(a.id, 'cancelled'); for (const job of this.store.jobs(a.id)) if (job.messageId && job.state === 'running') this.ports.stop(job.messageId); if (a.taskId) await this.ports.comment(a.taskId, `Factory cancelada pelo operador após confirmar worker drenado. Evidências preservadas. A branch factory/${a.id} e uma PR podem já existir no GitHub; permanecem preservadas para conferência e limpeza manual.`); return
         }
-      }
+        await this.wait(a, 'Cancellation requested; waiting for the worker to stop and drain')
+      } else await this.wait(a, 'Operator control is present; waiting for a valid cancel request and observed worker drainage')
+      return
     }
     if (a.blocked) return
     this.ticking = true
@@ -161,7 +173,7 @@ export class Factory {
         if (candidate.candidateSha !== a.candidateSha) throw new Error('Publication requires exact candidate head')
         const publication = await this.ports.publish({ attemptDir: this.dir(a), attemptId: a.id, candidateSha: a.candidateSha, baseSha: sha(candidate.baseSha), title: a.title, body: `Factory attempt ${a.id}. Native task ${a.taskId}. Candidate ${a.candidateSha}.`, signal: this.abort.signal })
         if (!this.current(a)) return
-        this.store.record(a.id, 'publication.observed', publication)
+        this.store.recordPublication(a.id, publication)
         if (publication.state !== 'published') {
           if (publication.state === 'conflict') throw new Error(publication.reason)
           await this.wait(a, publication.reason); return
@@ -173,8 +185,12 @@ export class Factory {
         this.write(a, 'publication.json', publication)
         if (!publication.ci.passed) { await this.wait(a, 'Waiting for required CI on the exact candidate'); return }
         if (a.stage === 'review') {
+          const review = this.store.jobs(a.id).find(j => j.role === 'review')
+          if (review) {
+            if (review.state === 'done' || review.state === 'failed') await this.wait(a, 'Existing review requires operator reconciliation; no duplicate review will launch')
+            return
+          }
           await this.wait(a, null)
-          if (this.store.jobs(a.id).some(j => j.role === 'review')) return
           const packetFile = `review-${a.candidateSha}.md`; const packet = readFileSync(join(this.dir(a), packetFile), 'utf8')
           const digest = hash(packet)
           this.write(a, 'review-manifest.json', { kind: 'pull_request', repository: this.config.publication.repository.fullName, pr: publication.pr, head_sha: a.candidateSha, packet_sha256: digest, packet_file: packetFile, criteria: a.criteria })
@@ -203,10 +219,11 @@ export class Factory {
   bind(requestId: string, agentId: string, messageId: string): Turn | undefined {
     const j = this.store.job(requestId); if (!j) return undefined
     const a = this.store.get(j.attemptId)
-    if (a.blocked || this.store.active()?.id !== a.id || agentId !== this.agent(j.role) || a.stage !== (j.role === 'review' ? 'review' : 'build')) throw new Error('Factory execution binding is no longer authorized')
+    if (agentId !== this.agent(j.role)) throw new Error('Factory execution agent differs from the reserved job')
+    this.store.attach(j.id, messageId)
+    if (a.blocked || this.store.active()?.id !== a.id || a.stage !== (j.role === 'review' ? 'review' : 'build')) throw new Error('Factory execution binding is no longer authorized')
     if (a.packageHash !== this.capabilities.pin) throw new Error('Factory job package differs from the immutable attempt package')
     this.ports.assertSkills(agentId)
-    this.store.attach(j.id, messageId)
     const previous = this.store.jobs(a.id).filter(x => x.role === 'build' && x.id !== j.id && x.messageId).at(-1)
     const priorState = previous?.messageId ? join(this.dir(a), 'hooks', previous.messageId, 'data/.ponytail-active') : undefined
     const inheritedMode = j.role !== 'review' && priorState && existsSync(priorState) ? readFileSync(priorState, 'utf8').trim() : 'full'
@@ -263,7 +280,12 @@ export class Factory {
     this.write(a, `message-${completion.id}.json`, completion)
     this.store.finish(j.id, completion.run.status === 'done' ? 'done' : 'failed', completion.text)
     if (this.store.active()?.id !== a.id || (j.role === 'review' ? a.stage !== 'review' : a.stage !== 'build')) return
-    if (completion.run.status !== 'done') { this.block(a.id, `Native ${j.role} execution ${completion.id} ended ${completion.run.status}; worker remains reserved${completion.run.errorDetail || completion.run.error ? `: ${completion.run.errorDetail ?? completion.run.error}` : ''}`); return }
+    if (completion.run.status !== 'done') {
+      const reason = `Native ${j.role} execution ${completion.id} ended ${completion.run.status}; worker remains reserved${completion.run.errorDetail || completion.run.error ? `: ${completion.run.errorDetail ?? completion.run.error}` : ''}`
+      this.block(a.id, reason)
+      await this.ports.comment(a.taskId, `Factory bloqueada: ${reason}`)
+      return
+    }
     if (a.blocked || this.store.active()?.id !== a.id) return
     if (!existsSync(join(this.dir(a), 'hooks', completion.id, 'delivery.json'))) { this.block(a.id, 'Native execution has no hook delivery evidence'); return }
     if (j.role === 'review') {

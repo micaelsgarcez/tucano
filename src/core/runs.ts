@@ -956,9 +956,13 @@ export class Runner {
     agent = db.agent(agent.id) ?? agent // limits or instructions may have changed while queued
     const msg: Message = opts.existing ?? { id: randomUUID(), conversationId: conv.id, author: { kind: 'agent', id: agent.id }, text: '', at: Date.now(), ...(opts.threadId ? { threadId: opts.threadId } : {}) }
     const factory = this.deps.factory?.()
-    const factoryTurn = factory?.bind(agent.id, conv.id, msg.threadId, msg.id)
+    let factoryTurn: ReturnType<FactoryBridge['bind']>
+    let factoryBindError: Error | undefined
+    try { factoryTurn = factory?.bind(agent.id, conv.id, msg.threadId, msg.id) }
+    catch (error) { factoryBindError = error instanceof Error ? error : new Error(String(error)) }
+    const factoryExecution = !!factoryTurn || !!factoryBindError
     const factoryIntake = factory?.intake(agent.id, conv.id, opts.trigger ?? opts.replyTo ?? opts.existing?.run?.replyTo)
-    if (factoryTurn) agent = { ...agent, web: false }
+    if (factoryExecution) agent = { ...agent, web: false }
     const model = modelInfo(agent.modelId)
     // The model this reply runs on: the agent's, or its reserve once the main one's subscription is out.
     let modelId = agent.modelId
@@ -1104,7 +1108,7 @@ export class Runner {
     const myConversations = (): Conversation[] => db.conversations().filter((c) => c.members.includes(agent.id) && sees.canSeeConversation(requester, c))
     // Any agent may propose agents, teams, routines and channels (a card the person applies); only the
     // Tuca helps with Tucano itself, with the guide and a look at the workspace.
-    const proposes = !!this.deps.gateway && !factoryTurn
+    const proposes = !!this.deps.gateway && !factoryExecution
     const helps = proposes && agent.kind === 'tuca'
     let computers = this.deps.gateway && agent.computer && (!factory || factory.computerAllowed(agent.id)) ? this.deps.computers : undefined
     // Docker was off last time: asked again now. Still off, the agent gets no computer tools and is told
@@ -1275,7 +1279,7 @@ ${note}`,
     const canReadFiles = !!this.deps.gateway && filed.length > 0
     // The app's own tools stay in the prompt; the connectors' wait behind tool search (ALWAYS_LOAD).
     const others = db.people()
-    const ownTools: ToolDef[] = factoryTurn ? [...factoryTurn.tools, ...(taskBinding ? [TASK_REPORT] : [])] : [
+    const ownTools: ToolDef[] = factoryExecution ? [...(factoryTurn?.tools ?? []), ...(taskBinding ? [TASK_REPORT] : [])] : [
       ...(factoryIntake?.tools ?? []),
       ...(taskBinding ? [TASK_REPORT] : []),
       askUserFor(others.map((p) => (p.id === db.ownerId() ? ownerName || p.name : p.name))),
@@ -1347,7 +1351,7 @@ ${note}`,
         .map((t) => (preload.has(t.name) ? { ...t, _meta: { ...ALWAYS_LOAD } } : t))
     ]
 
-    if (factoryTurn) toolDefs.splice(0, toolDefs.length, ...ownTools.map(t => ({ ...t, _meta: { ...t._meta, ...ALWAYS_LOAD } })))
+    if (factoryExecution) toolDefs.splice(0, toolDefs.length, ...ownTools.map(t => ({ ...t, _meta: { ...t._meta, ...ALWAYS_LOAD } })))
 
     const addSteps = (...steps: Step[]): void => {
       flush() // keep streamed text and the full-message event in order
@@ -2155,7 +2159,7 @@ ${note}`,
     const config = sessionConfig({ engine: engineId, model: modelName, effort: agent.effort, account: account?.id ?? '', web: agent.web !== false, system, tools: toolDefs.map(({ _meta: _m, ...t }) => t), gateway: !!this.deps.gateway })
     const shown: Shown[] = [...blockOf].map(([id, i]) => ({ id, block: blocks[i]! }))
     const writing = history.some((m) => m.author.kind === 'agent' && m.run?.status === 'working')
-    let plan = !factoryTurn && engines[engineId].sessions && !writing ? this.sessions.begin(sessionKey, { config, shown, live, restart: !!opts.existing, task: !!task }) : undefined
+    let plan = !factoryExecution && engines[engineId].sessions && !writing ? this.sessions.begin(sessionKey, { config, shown, live, restart: !!opts.existing, task: !!task }) : undefined
     let lost: SessionPlan | undefined // given up on in the middle (the reserve took the reply)
     const session = this.deps.gateway?.open(tools, plan?.token)
     const whole = { prompt: withFiles.join('\n\n'), blocks: withFiles, images }
@@ -2172,6 +2176,7 @@ ${note}`,
     try {
       for (;;) {
         try {
+          if (factoryBindError) throw factoryBindError
           if (factoryTurn) {
             if (!model?.id) throw new Error('Factory native profile has an unknown model')
             if (engineId !== 'codex' && engineId !== 'claude') throw new Error('Factory native profile requires a Codex or Claude model')
@@ -2225,7 +2230,7 @@ ${note}`,
         }
         // The main model's subscription is out before it did anything: the same reply goes to the reserve, once.
         // After a tool call it doesn't, since that would run the call again; the next reply starts on the main model.
-        const reserve = !factoryTurn && !onReserve && !result && error && !control.reason && !acted && !questions && !approval && (!msg.text.trim() || outOfQuota(msg.text)) && outOfQuota(error) ? this.reserveFor(agent, settings, account) : undefined
+        const reserve = !factoryExecution && !onReserve && !result && error && !control.reason && !acted && !questions && !approval && (!msg.text.trim() || outOfQuota(msg.text)) && outOfQuota(error) ? this.reserveFor(agent, settings, account) : undefined
         if (!reserve) break
         const from = `${engineLabel}${account ? ` (${account.name})` : ''}`
         flush()

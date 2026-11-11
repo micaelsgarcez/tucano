@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Publisher, type PublishInput } from '../src/factory/publisher'
@@ -124,4 +124,39 @@ it('does not recreate a missing branch for an open or closed-unmerged PR', async
   }
   expect((await new Publisher(config, async () => ({ token }), { fetch: closed, remote }).publish(input)).state).toBe('conflict')
   expect(ref()).toBeNull(); expect(creates).toBe(1)
+})
+it('publishes from a depth-one baseline after remote main advances with complete remote connectivity', async () => {
+  const source = join(root, 'source'), baseline = join(root, 'baseline')
+  git(baseline, 'push', remote, 'HEAD:refs/heads/main'); git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+  git(root, 'clone', remote, source); rmSync(baseline, { recursive: true }); git(root, 'clone', '--depth=1', `file://${remote}`, baseline)
+  expect(git(baseline, 'rev-parse', '--is-shallow-repository')).toBe('true')
+  git(baseline, 'config', 'user.name', 'Test'); git(baseline, 'config', 'user.email', 'test@example.com')
+  input.baseSha = git(baseline, 'rev-parse', 'HEAD'); writeFileSync(join(baseline, 'candidate'), 'new'); git(baseline, 'add', '.'); git(baseline, 'commit', '-m', 'candidate from shallow base')
+  input.candidateSha = git(baseline, 'rev-parse', 'HEAD'); git(baseline, 'bundle', 'create', join(root, 'candidate.bundle'), 'HEAD')
+  writeFileSync(join(root, 'candidate.json'), JSON.stringify(input)); writeFileSync(join(root, 'verify.json'), JSON.stringify({ candidateSha: input.candidateSha, passed: true }))
+  git(source, 'config', 'user.name', 'Test'); git(source, 'config', 'user.email', 'test@example.com'); writeFileSync(join(source, 'advanced'), 'remote advancement'); git(source, 'add', '.'); git(source, 'commit', '-m', 'advance main'); git(source, 'push', 'origin', 'main')
+  expect(await publisher().publish(input)).toMatchObject({ state: 'published', candidateSha: input.candidateSha })
+  expect(ref()).toBe(input.candidateSha); expect(() => git(remote, 'fsck', '--connectivity-only')).not.toThrow()
+})
+it('reports corrupt bundles and receipts as local conflicts without token permission advice', async () => {
+  writeFileSync(join(root, 'candidate.bundle'), 'corrupt')
+  const bundle = await publisher().publish(input); expect(bundle).toEqual({ state: 'conflict', reason: 'Local candidate Git validation failed; inspect baseline and bundle' }); expect(ref()).toBeNull()
+  writeFileSync(join(root, 'candidate.json'), '{broken')
+  expect(await publisher().publish(input)).toMatchObject({ state: 'conflict', reason: 'Candidate verification receipt missing, invalid or mismatched' })
+})
+it('rejects malformed shallow boundaries before a write', async () => {
+  writeFileSync(join(root, 'baseline/.git/shallow'), 'not-a-commit\n')
+  expect(await publisher().publish(input)).toEqual({ state: 'conflict', reason: 'Invalid trusted baseline shallow boundary' }); expect(ref()).toBeNull()
+})
+it('reports rate limiting from safe headers without exposing response bodies', async () => {
+  const limited: typeof fetch = async () => new Response(token, { status: 403, headers: { 'x-ratelimit-remaining': '0' } })
+  expect(await new Publisher(config, async () => ({ token }), { fetch: limited, remote }).publish(input)).toEqual({ state: 'waiting', reason: 'GitHub rate limit reached; retry later' })
+})
+
+it('rejects a symlinked shallow boundary and keeps push failures recoverable', async () => {
+  symlinkSync(join(root, 'candidate.json'), join(root, 'baseline/.git/shallow'))
+  expect(await publisher().publish(input)).toEqual({ state: 'conflict', reason: 'Invalid trusted baseline shallow boundary' })
+  rmSync(join(root, 'baseline/.git/shallow'))
+  const unavailable = new Publisher(config, async () => ({ token }), { fetch: mockFetch, remote: join(root, 'absent.git') })
+  expect(await unavailable.publish(input)).toEqual({ state: 'waiting', reason: 'Git push unavailable; check transport and contents write permission, then retry' }); expect(ref()).toBeNull()
 })

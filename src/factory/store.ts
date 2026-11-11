@@ -1,3 +1,4 @@
+import type { Publication } from './publisher'
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { id, object, string, strings, type Profile, type Attempt, type Job, type Role, type Stage, type Usage } from './types'
@@ -74,6 +75,12 @@ export class Store {
   readSkill(id_: string, path: string): void { const j = this.job(id_); if (!j) throw new Error('Unknown job'); this.db.prepare('UPDATE jobs SET skills_read=? WHERE id=?').run(JSON.stringify([...new Set([...j.skillsRead, path])]), id_) }
   stageStarted(id_: string): number { const row = this.db.prepare("SELECT at FROM evidence WHERE attempt_id=? AND kind IN ('reserved','stage') ORDER BY id DESC LIMIT 1").get(id_); return Number(row?.at ?? this.get(id_).createdAt) }
   record(id_: string, kind: string, data: unknown): void { this.db.prepare('INSERT INTO evidence(attempt_id,kind,data,at) VALUES(?,?,?,?)').run(id_, kind, JSON.stringify(data), Date.now()) }
+  recordPublication(id_: string, publication: Publication): void {
+    const previous = this.db.prepare("SELECT data FROM evidence WHERE attempt_id=? AND kind='publication.observed' ORDER BY id DESC LIMIT 1").get(id_)
+    const stable = (value: unknown): string => JSON.stringify(value, (key, item: unknown) => key === 'observedAt' ? undefined : item)
+    if (previous && stable(JSON.parse(string(previous.data))) === stable(publication)) return
+    this.record(id_, 'publication.observed', publication)
+  }
   usage(id_: string, jobId: string, usage: Usage[]): void { for (const u of usage) this.db.prepare('INSERT OR IGNORE INTO usage VALUES(?,?,?,?)').run(u.id, id_, jobId, JSON.stringify(u)) }
   recover(): void {
     const a = this.active(); if (!a) return

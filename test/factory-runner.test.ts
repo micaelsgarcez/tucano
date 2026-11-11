@@ -10,6 +10,7 @@ import { Db } from '../src/core/db'
 import { Gateway } from '../src/core/gateway'
 import { Runner } from '../src/core/runs'
 import { Tasks } from '../src/core/tasks'
+import type { Ports } from '../src/factory/types'
 import type { FactoryBridge } from '../src/core/factory'
 import type { Engine, EngineEvent, Turn } from '../src/core/engines/types'
 import { fakeEngine } from '../src/core/engines/fake'
@@ -18,7 +19,7 @@ import { factoryConfig, testPorts } from './helpers/factory'
 import { seedTasks, taskFixture } from './helpers/tasks'
 const cleanups: (() => void | Promise<void>)[] = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
-async function setup(run: (turn: Turn) => AsyncIterable<EngineEvent>, packagePath?: string, engine: 'codex' | 'claude' = 'codex', humanPrompt = 'Fix the bug') {
+async function setup(run: (turn: Turn) => AsyncIterable<EngineEvent>, packagePath?: string, engine: 'codex' | 'claude' = 'codex', humanPrompt = 'Fix the bug', extra: Partial<Ports> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-runner-')); cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   const root = join(dir, 'factory'); mkdirSync(root)
   const db = new Db(join(dir, 'native.sqlite')); cleanups.push(() => db.close())
@@ -40,14 +41,14 @@ async function setup(run: (turn: Turn) => AsyncIterable<EngineEvent>, packagePat
     intake: () => undefined,
     computerAllowed: () => false,
     close: () => {},
-    completed: async message => { const execution = db.taskExecution(message.conversationId, message.threadId); if (execution && message.author.kind === 'agent' && message.run) await factory.completed(execution.requestId, { id: message.id, author: message.author, text: message.text, run: { status: message.run.status }, usage: db.receiptsSince(0).filter(r => r.messageId === message.id).map(r => ({ ...r, id: String(r.receiptId) })) }) }
+    completed: async message => { const execution = db.taskExecution(message.conversationId, message.threadId); if (execution && message.author.kind === 'agent' && message.run) await factory.completed(execution.requestId, { id: message.id, author: message.author, text: message.text, run: { status: message.run.status, error: message.run.error, errorDetail: message.run.errorDetail }, usage: db.receiptsSince(0).filter(r => r.messageId === message.id).map(r => ({ ...r, id: String(r.receiptId) })) }) }
   }
   const runner = new Runner({ db, engines, settings: async () => settings, emit: () => {}, workDir: join(dir, 'agents'), gateway, factory: () => bridge })
   factory = new Factory(root, cfg, {
     ...testPorts(root),
     createTask: async input => (await tasks.create({ sourceId: taskFixture.sourceId, ...input })).task,
     task: async id => (await tasks.detail(taskFixture.sourceId, id)).task,
-    stop: () => {}, completeTask: async () => {}, comment: async () => {},
+    stop: () => {}, completeTask: async () => {}, comment: async () => {}, ...extra,
     launch: async input => {
       const detail = await tasks.detail(taskFixture.sourceId, input.taskId); const agent = db.agent(input.agentId)!; const conversation = db.conversation(`dm-${agent.id}`)!
       return runner.startTask({ source: store.source()!, detail, agent, conversation, requester: db.owner(), role: input.role, requestId: input.requestId, instructions: input.instructions })
@@ -178,4 +179,25 @@ test('a known native model from an unsupported engine cannot escape the factory 
   const run = f.db.messages().find(m => m.id === f.factory.store.job(job.id)?.messageId)?.run
   expect(run?.status).toBe('failed')
   expect(`${run?.error} ${run?.errorDetail}`).toContain('Codex or Claude')
+})
+
+
+test('a native queue bind refusal fails visibly and releases accounting without calling a provider', async () => {
+  let assigned = true; let providers = 0; const comments: string[] = []
+  const f = await setup(async function* () { providers++; yield done('unexpected') }, undefined, 'codex', 'Fix', {
+    assertSkills: () => { if (!assigned) throw new Error('Required pinned skill was unassigned before bind') },
+    comment: async (_, text) => { comments.push(text) }
+  })
+  const pending = f.launchBuild(); assigned = false
+  const job = await pending; await f.runner.idle()
+  expect(providers).toBe(0); expect(f.fallbackCalls()).toBe(0)
+  const settled = f.factory.store.job(job.id)!
+  expect(settled.state).toBe('failed'); expect(settled.messageId).toBeTruthy()
+  const message = f.db.message(settled.messageId!)!
+  expect(message.run?.status).toBe('failed')
+  expect(message.run?.endedAt).toBeTypeOf('number')
+  expect(`${message.run?.error} ${message.run?.errorDetail}`).toContain('unassigned before bind')
+  expect(f.factory.store.get(f.attempt.id).blocked).toContain('unassigned before bind')
+  expect(comments.some(text => text.includes('unassigned before bind'))).toBe(true)
+  expect(f.db.taskExecution(message.conversationId, message.threadId)?.state).toBe('started')
 })
