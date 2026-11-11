@@ -133,12 +133,12 @@ export class Publisher {
       await readPr(number)
       const checks = new Map<string, { id: number; name: string; state: string }>()
       const parseRun = (value: unknown) => {
-        const r = object(value), repository = object(r.repository)
-        if (r.head_sha !== candidate || repository.id !== this.config.repository.id || repository.full_name !== this.config.repository.fullName) throw new Halt('waiting', 'Actions run differs from candidate repository or SHA')
+        const r = object(value), repository = object(r.repository), headRepository = object(r.head_repository)
+        if (r.head_sha !== candidate || r.head_branch !== branch || headRepository.id !== this.config.repository.id || repository.id !== this.config.repository.id || repository.full_name !== this.config.repository.fullName) throw new Halt('waiting', 'Actions run differs from candidate repository, branch or SHA')
         return { id: integer(r.id), workflow: integer(r.workflow_id), event: string(r.event), attempt: integer(r.run_attempt), status: string(r.status), conclusion: r.conclusion === null ? null : string(r.conclusion) }
       }
       const runs = new Map<string, ReturnType<typeof parseRun>>()
-      for (const item of await list(`/actions/runs?head_sha=${candidate}`, 'actions read', 'workflow_runs')) {
+      for (const item of await list(`/actions/runs?head_sha=${candidate}&branch=${encodeURIComponent(branch)}`, 'actions read', 'workflow_runs')) {
         const run = parseRun(item), key = `${run.workflow}:${run.event}`, previous = runs.get(key)
         if (!previous || run.id > previous.id || (run.id === previous.id && run.attempt > previous.attempt)) runs.set(key, run)
       }

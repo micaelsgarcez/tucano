@@ -36,14 +36,14 @@ const mockFetch: typeof fetch = async (url, init) => {
   if (path.startsWith('/actions/')) {
     if (denied) return json({ message: token }, 403)
     if (changed) head = input.baseSha
-    if (path === '/actions/runs') return json({ workflow_runs: [workflow(), workflow({ id: 1, conclusion: 'failure' })] })
+    if (path === '/actions/runs') { expect(u.searchParams.get('branch')).toBe(branch); return json({ workflow_runs: [workflow(), workflow({ id: 1, conclusion: 'failure' })] }) }
     if (path.endsWith('/jobs')) return json({ jobs: [job()] })
     if (path === '/actions/runs/2') return json(workflow())
   }
   if (path.endsWith('/statuses')) return json([])
   throw new Error(`Unexpected path ${path}`)
 }
-function workflow(overrides = {}) { return { id: 2, workflow_id: 10, event: 'pull_request', run_attempt: 1, head_sha: input.candidateSha, repository: { id: config.repository.id, full_name: config.repository.fullName }, status: pending ? 'in_progress' : 'completed', conclusion: 'success', ...overrides } }
+function workflow(overrides = {}) { return { id: 2, workflow_id: 10, event: 'pull_request', run_attempt: 1, head_sha: input.candidateSha, head_branch: branch, head_repository: { id: config.repository.id }, repository: { id: config.repository.id, full_name: config.repository.fullName }, status: pending ? 'in_progress' : 'completed', conclusion: 'success', ...overrides } }
 function job(overrides = {}) { return { id: 20, run_id: 2, run_attempt: 1, head_sha: input.candidateSha, name: 'test', status: 'completed', conclusion: 'success', ...overrides } }
 function publisher(credentials = async () => ({ token })) { return new Publisher(config, credentials, { fetch: mockFetch, remote }) }
 it('imports a prerequisite bundle and publishes exact SHA once across retries', async () => {
@@ -175,12 +175,14 @@ it.each(['missing required job', 'pending job'])('does not accept a successful s
   }
   expect(await new Publisher(config, async () => ({ token }), { fetch: fetchMissing, remote }).publish(input)).toMatchObject({ state: 'published', ci: { passed: false } })
 })
-it.each(['queued', 'failure', 'changed', 'old-sha', 'wrong-repository', 'old-attempt', 'wrong-run', 'old-job-sha', 'duplicate-name'])('rejects stale or unsuccessful Actions evidence: %s', async mode => {
+it.each(['queued', 'failure', 'changed', 'old-sha', 'wrong-repository', 'wrong-branch', 'fork', 'old-attempt', 'wrong-run', 'old-job-sha', 'duplicate-name'])('rejects stale or unsuccessful Actions evidence: %s', async mode => {
   const evidence: typeof fetch = async (url, init) => {
     const path = new URL(String(url)).pathname
     const run = workflow(mode === 'queued' ? { run_attempt: 2, status: 'queued', conclusion: null }
       : mode === 'failure' ? { conclusion: 'failure' }
       : mode === 'old-sha' ? { head_sha: input.baseSha }
+      : mode === 'wrong-branch' ? { head_branch: 'another-branch' }
+      : mode === 'fork' ? { head_repository: { id: 1 } }
       : mode === 'wrong-repository' ? { repository: { id: 1, full_name: 'other/repo' } } : {})
     if (path.endsWith('/actions/runs')) return Response.json({ workflow_runs: mode === 'duplicate-name' ? [run, workflow({ id: 3, workflow_id: 11 })] : [run] })
     if (path.endsWith('/jobs')) return Response.json({ jobs: [job(mode === 'old-attempt' ? { run_attempt: 0 }
